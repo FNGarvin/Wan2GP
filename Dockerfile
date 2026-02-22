@@ -33,8 +33,9 @@ ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
 ENV DEBIAN_FRONTEND=noninteractive
 
 # System packages — single layer, cleanup in same RUN to avoid bloating intermediate layers
+# python3-dev provides Python.h, required for packages with C/Cython extensions (e.g. insightface)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip git wget curl cmake ninja-build \
+    python3 python3-dev python3-pip git wget curl cmake ninja-build \
     libgl1 libglib2.0-0 ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
