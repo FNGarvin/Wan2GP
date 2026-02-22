@@ -1,0 +1,75 @@
+# FNGarvin - Wan2GP Project
+# License: TODO: INSERT LICENSE
+# Year: 2026
+#
+# sage-wheels.yml
+# Optional: manually-triggered workflow to pre-build a SageAttention wheel
+# and publish it as a GitHub pre-release asset.
+#
+# This is a future optimisation. It only provides value if:
+#   a) SageAttention build time dominates CI iteration cycles, AND
+#   b) BuildKit layer caching (in docker-build.yml) proves insufficient.
+#
+# How it works:
+#   - Clones the pinned SageAttention tag
+#   - Runs the two-pass NVCC compile (no GPU required; TORCH_CUDA_ARCH_LIST
+#     bypasses runtime GPU detection; NVCC cross-compiles to all target SMs)
+#   - Uploads the .whl as a pre-release asset
+#   - docker-build.yml can then pip-install from the release URL instead of
+#     compiling from source
+#
+# To activate: remove the 'if: false' guard below and configure a runner with
+# the CUDA devel image available (standard ubuntu-latest is sufficient).
+---
+name: SageAttention Pre-built Wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      sage_tag:
+        description: SageAttention git tag to build
+        required: true
+        default: v2.2.0
+
+jobs:
+  build-wheel:
+    name: Build SageAttention wheel
+    runs-on: ubuntu-latest
+    # Guard: disabled until intentionally activated
+    if: false
+
+    container:
+      image: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            python3 python3-pip git cmake ninja-build && \
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install PyTorch (required for SageAttention build)
+        run: |
+          pip install --upgrade pip
+          pip install torch==2.10.0+cu128 \
+            --index-url https://download.pytorch.org/whl/cu128
+
+      - name: Clone and build SageAttention (two-pass)
+        env:
+          FORCE_CUDA: "1"
+          MAX_JOBS: "4"
+        run: |
+          git clone --branch ${{ inputs.sage_tag }} --depth 1 \
+            https://github.com/thu-ml/SageAttention.git /tmp/SageAttention
+          cd /tmp/SageAttention
+          TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" python3 setup.py build_ext
+          TORCH_CUDA_ARCH_LIST="9.0+PTX"     python3 setup.py build_ext
+          TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" python3 setup.py bdist_wheel
+
+      - name: Upload wheel as pre-release
+        uses: actions/upload-artifact@v4
+        with:
+          name: sageattention-${{ inputs.sage_tag }}-cu128
+          path: /tmp/SageAttention/dist/*.whl
+
+# EOF sage-wheels.yml

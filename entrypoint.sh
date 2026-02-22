@@ -1,118 +1,128 @@
 #!/usr/bin/env bash
+# FNGarvin - Wan2GP Project
+# License: TODO: INSERT LICENSE
+# Year: 2026
+#
+# entrypoint.sh
+# Container entrypoint. Detects GPU model and VRAM at runtime, selects the
+# appropriate WanGP profile (1-5) and attention mode (sage2/sage/sdpa), then
+# launches wgp.py. Persistent data directories are routed to /workspace/ for
+# RunPod pod-volume persistence.
+#
+# Runtime overrides (env vars):
+#   WGP_PROFILE   — override auto-detected profile (1-5)
+#   WGP_ATTENTION — override auto-detected attention mode
+#   WGP_ARGS      — additional wgp.py arguments (e.g. "--compile --teacache 2.0")
+#   CUDA_VISIBLE_DEVICES — standard NVIDIA env; respected automatically
+
+set -euo pipefail
+
 export HOME=/home/user
 export PYTHONUNBUFFERED=1
-export HF_HOME=/home/user/.cache/huggingface
 
-export OMP_NUM_THREADS=$(nproc)
-export MKL_NUM_THREADS=$(nproc)
-export OPENBLAS_NUM_THREADS=$(nproc)
-export NUMEXPR_NUM_THREADS=$(nproc)
+# ── Persistent cache dirs (RunPod pod volume) ────────────────────────────────
+export HF_HOME=/workspace/.cache/huggingface
+export TRITON_CACHE_DIR=/workspace/.cache/triton
 
+# ── CPU thread tuning ────────────────────────────────────────────────────────
+_nproc=$(nproc)
+export OMP_NUM_THREADS=$_nproc
+export MKL_NUM_THREADS=$_nproc
+export OPENBLAS_NUM_THREADS=$_nproc
+export NUMEXPR_NUM_THREADS=$_nproc
+
+# ── TF32 acceleration (Ampere+) ──────────────────────────────────────────────
 export TORCH_ALLOW_TF32_CUBLAS=1
 export TORCH_ALLOW_TF32_CUDNN=1
 
-# Disable audio warnings in Docker
+# ── Audio dummy (suppress ALSA/PulseAudio noise in headless containers) ──────
 export SDL_AUDIODRIVER=dummy
 export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 
-# ═══════════════════════════ CUDA DEBUG CHECKS ═══════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU detection helpers (ported from run-docker-cuda-deb.sh)
+# ─────────────────────────────────────────────────────────────────────────────
 
-echo "🔍 CUDA Environment Debug Information:"
-echo "═══════════════════════════════════════════════════════════════════════"
+_detect_gpu_name() {
+    nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1
+}
 
-# Check CUDA driver on host (if accessible)
-if command -v nvidia-smi >/dev/null 2>&1; then
-    echo "✅ nvidia-smi available"
-    echo "📊 GPU Information:"
-    nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null || echo "❌ nvidia-smi failed to query GPU"
-    echo "🏃 Running Processes:"
-    nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader,nounits 2>/dev/null || echo "ℹ️  No running CUDA processes"
+_detect_vram_gb() {
+    local mb
+    mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+    echo $(( mb / 1024 ))
+}
+
+# Maps GPU name → WanGP profile number (1-5).
+# Profile definitions (from WanGP UI):
+#   1 HighRAM_HighVRAM  48GB+ RAM, 24GB+ VRAM (fastest short video; RTX 3090/4090)
+#   2 HighRAM_LowVRAM   48GB+ RAM, 12GB+ VRAM (recommended; most versatile)
+#   3 LowRAM_HighVRAM   32GB+ RAM, 24GB+ VRAM (RTX 3090/4090 with limited RAM)
+#   4 LowRAM_LowVRAM    32GB+ RAM, 12GB+ VRAM (default)
+#   5 VeryLowRAM_LowVRAM 16GB+ RAM, 10GB+ VRAM (fail-safe; slow)
+_map_profile() {
+    local name="$1" vram_gb="$2"
+    case "$name" in
+        *"RTX 50"*|*"5090"*|*"5080"*|*"5070"*|\
+        *"A100"*|*"A800"*|*"H100"*|*"H800"*)
+            [ "$vram_gb" -ge 24 ] && echo 1 || echo 2 ;;
+        *"RTX 40"*|*"4090"*|*"RTX 30"*|*"3090"*)
+            [ "$vram_gb" -ge 24 ] && echo 3 || echo 2 ;;
+        *"4080"*|*"4070"*|*"3080"*|*"3070"*|\
+        *"RTX 20"*|*"2080"*|*"2070"*)
+            [ "$vram_gb" -ge 12 ] && echo 2 || echo 4 ;;
+        *"4060"*|*"3060"*|*"2060"*|*"GTX 16"*|*"1660"*|*"1650"*)
+            [ "$vram_gb" -ge 10 ] && echo 4 || echo 5 ;;
+        *"GTX 10"*|*"1080"*|*"1070"*|*"1060"*|*"Tesla"*)
+            echo 5 ;;
+        *)
+            echo 4 ;;  # safe default
+    esac
+}
+
+# Maps GPU name → attention mode (sage2 / sage / sdpa)
+_map_attention() {
+    local name="$1"
+    case "$name" in
+        *"RTX 50"*|*"RTX 40"*|*"RTX 30"*|\
+        *"A100"*|*"A800"*|*"H100"*|*"H800"*)
+            echo sage2 ;;
+        *"RTX 20"*)
+            echo sage ;;
+        *)
+            echo sdpa ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime GPU detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "[WARN] nvidia-smi not found — GPU passthrough may be missing." >&2
+    PROFILE=${WGP_PROFILE:-4}
+    ATTN=${WGP_ATTENTION:-sdpa}
+    GPU_NAME="unknown"
+    VRAM_GB=0
 else
-    echo "❌ nvidia-smi not available in container"
+    GPU_NAME=$(_detect_gpu_name)
+    VRAM_GB=$(_detect_vram_gb)
+    PROFILE=${WGP_PROFILE:-$(_map_profile "$GPU_NAME" "$VRAM_GB")}
+    ATTN=${WGP_ATTENTION:-$(_map_attention "$GPU_NAME")}
 fi
 
-# Check CUDA runtime libraries
-echo ""
-echo "🔧 CUDA Runtime Check:"
-if ls /usr/local/cuda*/lib*/libcudart.so* >/dev/null 2>&1; then
-    echo "✅ CUDA runtime libraries found:"
-    ls /usr/local/cuda*/lib*/libcudart.so* 2>/dev/null
-else
-    echo "❌ CUDA runtime libraries not found"
-fi
+echo "[INFO] GPU: ${GPU_NAME} | VRAM: ${VRAM_GB}GB | Profile: ${PROFILE} | Attention: ${ATTN}"
 
-# Check CUDA devices
-echo ""
-echo "🖥️  CUDA Device Files:"
-if ls /dev/nvidia* >/dev/null 2>&1; then
-    echo "✅ NVIDIA device files found:"
-    ls -la /dev/nvidia* 2>/dev/null
-else
-    echo "❌ No NVIDIA device files found - Docker may not have GPU access"
-fi
+# ─────────────────────────────────────────────────────────────────────────────
+# Launch
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Check CUDA environment variables
-echo ""
-echo "🌍 CUDA Environment Variables:"
-echo "   CUDA_HOME: ${CUDA_HOME:-not set}"
-echo "   CUDA_ROOT: ${CUDA_ROOT:-not set}"
-echo "   CUDA_PATH: ${CUDA_PATH:-not set}"
-echo "   LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-not set}"
-echo "   TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST:-not set}"
-echo "   CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-not set}"
+exec su -p user -c "cd /workspace/wan2gp && \
+    python3 wgp.py \
+        --listen \
+        --profile ${PROFILE} \
+        --attention ${ATTN} \
+        ${WGP_ARGS:-} \
+        $*"
 
-# Check PyTorch CUDA availability
-echo ""
-echo "🐍 PyTorch CUDA Check:"
-python3 -c "
-import sys
-try:
-    import torch
-    print('✅ PyTorch imported successfully')
-    print(f'   Version: {torch.__version__}')
-    print(f'   CUDA available: {torch.cuda.is_available()}')
-    if torch.cuda.is_available():
-        print(f'   CUDA version: {torch.version.cuda}')
-        print(f'   cuDNN version: {torch.backends.cudnn.version()}')
-        print(f'   Device count: {torch.cuda.device_count()}')
-        for i in range(torch.cuda.device_count()):
-            props = torch.cuda.get_device_properties(i)
-            print(f'   Device {i}: {props.name} (SM {props.major}.{props.minor}, {props.total_memory//1024//1024}MB)')
-    else:
-        print('❌ CUDA not available to PyTorch')
-        print('   This could mean:')
-        print('   - CUDA runtime not properly installed')
-        print('   - GPU not accessible to container')
-        print('   - Driver/runtime version mismatch')
-except ImportError as e:
-    print(f'❌ Failed to import PyTorch: {e}')
-except Exception as e:
-    print(f'❌ PyTorch CUDA check failed: {e}')
-" 2>&1
-
-# Check for common CUDA issues
-echo ""
-echo "🩺 Common Issue Diagnostics:"
-
-# Check if running with proper Docker flags
-if [ ! -e /dev/nvidia0 ] && [ ! -e /dev/nvidiactl ]; then
-    echo "❌ No NVIDIA device nodes - container likely missing --gpus all or --runtime=nvidia"
-fi
-
-# Check CUDA library paths
-if [ -z "$LD_LIBRARY_PATH" ] || ! echo "$LD_LIBRARY_PATH" | grep -q cuda; then
-    echo "⚠️  LD_LIBRARY_PATH may not include CUDA libraries"
-fi
-
-# Check permissions on device files
-if ls /dev/nvidia* >/dev/null 2>&1; then
-    if ! ls -la /dev/nvidia* | grep -q "rw-rw-rw-\|rw-r--r--"; then
-        echo "⚠️  NVIDIA device files may have restrictive permissions"
-    fi
-fi
-
-echo "═══════════════════════════════════════════════════════════════════════"
-echo "🚀 Starting application..."
-echo ""
-
-exec su -p user -c "python3 wgp.py --listen $*"
+# EOF entrypoint.sh

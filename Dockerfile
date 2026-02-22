@@ -1,92 +1,121 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
-
-# Build arg for GPU architectures - specify which CUDA compute capabilities to compile for
-# Common values:
-#   7.0  - Tesla V100
-#   7.5  - RTX 2060, 2070, 2080, Titan RTX
-#   8.0  - A100, A800 (Ampere data center)
-#   8.6  - RTX 3060, 3070, 3080, 3090 (Ampere consumer)
-#   8.9  - RTX 4070, 4080, 4090 (Ada Lovelace)
-#   9.0  - H100, H800 (Hopper data center)
-#   12.0 - RTX 5070, 5080, 5090 (Blackwell) - Note: sm_120 architecture
+# syntax=docker/dockerfile:1.4
+# FNGarvin - Wan2GP Project
+# License: TODO: INSERT LICENSE
+# Year: 2026
 #
-# Examples:
-#   RTX 3060: --build-arg CUDA_ARCHITECTURES="8.6"
-#   RTX 4090: --build-arg CUDA_ARCHITECTURES="8.9"
-#   Multiple: --build-arg CUDA_ARCHITECTURES="8.0;8.6;8.9"
+# Multi-stage Dockerfile for RunPod / cloud deployment.
 #
-# Note: Including 8.9 or 9.0 may cause compilation issues on some setups
-# Default includes 8.0 and 8.6 for broad Ampere compatibility
-ARG CUDA_ARCHITECTURES="8.0;8.6"
+# Stage 1 (deps):  apt + uv + PyTorch + pip requirements + SageAttention compile.
+#                  Cache-stable across source-code-only changes.
+# Stage 2 (runtime): copies project source into image (required for RunPod;
+#                    no host bind mount available). Persistent data (models,
+#                    outputs, caches) routes to /workspace/ which maps to the
+#                    RunPod pod volume.
+#
+# Build args:
+#   CUDA_ARCHITECTURES  Semicolon-separated SM targets for SageAttention.
+#                       Default covers Ampere, Ada, Hopper, and Blackwell
+#                       (via forward-compat PTX JIT on sm_120).
+#
+# Local build (Podman):
+#   podman build --build-arg CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX" \
+#     -t wan2gp:local .
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — deps
+# Everything expensive lives here and is layer-cached between builds.
+# Invalidated only when apt packages, PyTorch version, or SageAttention tag change.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS deps
+
+# Broad SM target set:
+#   8.0  — A100/A800 (Ampere data center)
+#   8.6  — RTX 3060-3090 (Ampere consumer)
+#   8.9  — RTX 4060-4090 (Ada Lovelace)
+#   9.0+PTX — H100/H800 (Hopper) + forward-compat PTX for Blackwell JIT (sm_120)
+ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
-RUN apt update && \
-    apt install -y \
+# System packages — single layer, cleanup in same RUN to avoid bloating intermediate layers
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip git wget curl cmake ninja-build \
     libgl1 libglib2.0-0 ffmpeg && \
-    apt clean
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+# Install uv (fast pip resolver/installer)
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/root/.local/bin:${PATH}"
 
-COPY requirements.txt .
+# PyTorch — installed first so requirements.txt doesn't pull a generic CPU build.
+# CUDA 12.8 matches the base image; change both together if upgrading.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system \
+    torch==2.10.0+cu128 \
+    torchvision==0.25.0+cu128 \
+    torchaudio==2.10.0+cu128 \
+    --index-url https://download.pytorch.org/whl/cu128
 
-# Upgrade pip first
-RUN pip install --upgrade pip setuptools wheel
+# Project requirements
+COPY requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r /tmp/requirements.txt
 
-# First install torch with the versions we want, so that stuff in requirements.txt doesn't pull in the generic versions
-# If you change CUDA 12.8 here, you also need to change the FROM docker image at the top
-RUN pip install torch==2.10.0+cu128 torchvision==0.25.0+cu128 torchaudio==2.10.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-
-# Install requirements if exists
-RUN pip install -r requirements.txt
-
-# Install SageAttention from git (patch GPU detection)
-ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHITECTURES}"
+# ── SageAttention 2++ ────────────────────────────────────────────────────────
+# Two-pass NVCC strategy (ported from comfy_con).
+# NVCC is a cross-compiler — no physical GPU is required on the build host.
+# TORCH_CUDA_ARCH_LIST bypasses SageAttention's runtime gpu-detection probe.
+#
+# Why two passes instead of one?
+#   Compiling sm_80/86/89 and sm_90 in a single NVCC invocation can produce
+#   PTX that is only valid for the highest SM, causing assembler failures for
+#   lower SM targets at link time. Separating the passes eliminates this.
+#
+# Pass 1: Ampere (sm_80, sm_86) + Ada (sm_89)
+# Pass 2: Hopper (sm_90) + forward-compat PTX — Blackwell (sm_120) JIT-recompiles
+#         this PTX via the CUDA driver on first load.
+#
+# Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
 ENV FORCE_CUDA="1"
-ENV MAX_JOBS="8"
+RUN --mount=type=cache,target=/tmp/sa_cache \
+    git clone --branch v2.2.0 --depth 1 \
+    https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
+    cd /tmp/SageAttention && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=4 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=4 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9"             python3 setup.py install && \
+    rm -rf /tmp/SageAttention
 
-COPY <<EOF /tmp/patch_setup.py
-import os
-with open('setup.py', 'r') as f:
-    content = f.read()
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — runtime
+# Thin application layer. Invalidated on every source change; deps stage is not.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM deps AS runtime
 
-# Get architectures from environment variable
-arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST')
-arch_set = '{' + ', '.join([f'"{arch}"' for arch in arch_list.split(';')]) + '}'
-
-# Replace the GPU detection section
-old_section = '''compute_capabilities = set()
-device_count = torch.cuda.device_count()
-for i in range(device_count):
-    major, minor = torch.cuda.get_device_capability(i)
-    if major < 8:
-        warnings.warn(f"skipping GPU {i} with compute capability {major}.{minor}")
-        continue
-    compute_capabilities.add(f"{major}.{minor}")'''
-
-new_section = 'compute_capabilities = ' + arch_set + '''
-print(f"Manually set compute capabilities: {compute_capabilities}")'''
-
-content = content.replace(old_section, new_section)
-
-with open('setup.py', 'w') as f:
-    f.write(content)
-EOF
-
-RUN git clone https://github.com/thu-ml/SageAttention.git /tmp/sageattention && \
-    cd /tmp/sageattention && \
-    python3 /tmp/patch_setup.py && \
-    pip install --no-build-isolation .
-
+# Non-root user — uid 1000 is the RunPod convention
 RUN useradd -u 1000 -ms /bin/bash user
 
-RUN chown -R user:user /workspace
+# Project source baked into the image (no host bind mount for cloud/RunPod deployments)
+WORKDIR /workspace/wan2gp
+COPY --chown=user:user . .
 
-RUN mkdir /home/user/.cache && \
-    chown -R user:user /home/user/.cache
+# Persistent data directories live under /workspace/ which maps to the RunPod
+# pod volume — survives container restarts, not image rebuilds.
+#   /workspace/models            — downloaded model weights
+#   /workspace/outputs           — generated video/image output
+#   /workspace/.cache/huggingface — HF hub cache (large; keep persistent)
+#   /workspace/.cache/triton     — compiled Triton kernels (expensive; keep persistent)
+RUN mkdir -p \
+    /workspace/models \
+    /workspace/outputs \
+    /workspace/.cache/huggingface \
+    /workspace/.cache/triton && \
+    chown -R user:user /workspace
 
-COPY entrypoint.sh /workspace/entrypoint.sh
+COPY --chown=user:user entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/workspace/entrypoint.sh"]
+EXPOSE 7860
+ENTRYPOINT ["/entrypoint.sh"]
+
+# EOF Dockerfile
