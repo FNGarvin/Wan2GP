@@ -1,21 +1,22 @@
 # sage-wheels.yml
-# Optional: manually-triggered workflow to pre-build a SageAttention wheel
-# and publish it as a GitHub pre-release asset.
-#
-# This is a future optimisation. It only provides value if:
-#   a) SageAttention build time dominates CI iteration cycles, AND
-#   b) BuildKit layer caching (in docker-build.yml) proves insufficient.
+# Manually-triggered workflow that extracts the pre-compiled SageAttention wheel
+# from the sage-compile build stage and publishes it as a GitHub pre-release asset.
 #
 # How it works:
-#   - Clones the pinned SageAttention tag
-#   - Runs the two-pass NVCC compile (no GPU required; TORCH_CUDA_ARCH_LIST
-#     bypasses runtime GPU detection; NVCC cross-compiles to all target SMs)
-#   - Uploads the .whl as a pre-release asset
-#   - docker-build.yml can then pip-install from the release URL instead of
-#     compiling from source
+#   1. Builds the 'sage-compile' Dockerfile stage using the GHA BuildKit cache.
+#      If a successful docker-build.yml run has completed, this stage is a full
+#      cache hit and completes in seconds — no NVCC recompilation.
+#   2. Runs a short-lived container from that image to copy out dist/*.whl.
+#   3. Creates a GitHub pre-release tagged sage-<version>-cu128-cp310 and
+#      uploads the wheel as an asset.
 #
-# To activate: remove the 'if: false' guard below and configure a runner with
-# the CUDA devel image available (standard ubuntu-latest is sufficient).
+# Once a wheel is published, update the 'deps' stage in the Dockerfile to
+# install from the release URL instead of compiling from source:
+#
+#   RUN pip install --no-deps \
+#       https://github.com/<owner>/Wan2GP/releases/download/<tag>/<wheel>.whl
+#
+# To trigger: Actions tab → "SageAttention Pre-built Wheel" → Run workflow.
 ---
 name: SageAttention Pre-built Wheel
 
@@ -23,47 +24,75 @@ on:
   workflow_dispatch:
     inputs:
       sage_tag:
-        description: SageAttention git tag to build
+        description: SageAttention git tag baked into the current Dockerfile
         required: true
         default: v2.2.0
 
 jobs:
-  build-wheel:
-    name: Build SageAttention wheel
+  extract-wheel:
+    name: Extract wheel from build cache
     runs-on: ubuntu-latest
-    # Guard: disabled until intentionally activated
-    if: false
-
-    container:
-      image: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+    permissions:
+      contents: write   # required to create releases
+      packages: read    # required to read GHA cache
 
     steps:
-      - name: Install build dependencies
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            python3 python3-pip git cmake ninja-build && \
-          rm -rf /var/lib/apt/lists/*
+      - name: Checkout repository
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
-      - name: Install PyTorch (required for SageAttention build)
-        run: |
-          pip install --upgrade pip
-          pip install torch==2.10.0+cu128 \
-            --index-url https://download.pytorch.org/whl/cu128
+      - name: Set up Docker Buildx
+        # docker/setup-buildx-action v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - name: Clone and build SageAttention (two-pass)
-        env:
-          FORCE_CUDA: "1"
-          MAX_JOBS: "4"
-        run: |
-          git clone --branch ${{ inputs.sage_tag }} --depth 1 \
-            https://github.com/thu-ml/SageAttention.git /tmp/SageAttention
-          cd /tmp/SageAttention
-          TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" python3 setup.py build_ext
-          TORCH_CUDA_ARCH_LIST="9.0+PTX"     python3 setup.py build_ext
-          TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" python3 setup.py bdist_wheel
-
-      - name: Upload wheel as pre-release
-        uses: actions/upload-artifact@v4
+      - name: Build sage-compile stage (GHA cache hit if docker-build.yml ran)
+        # docker/build-push-action v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
-          name: sageattention-${{ inputs.sage_tag }}-cu128
-          path: /tmp/SageAttention/dist/*.whl
+          context: .
+          target: sage-compile
+          # load: true makes the image available to the local Docker daemon
+          # so we can run a container from it in the next step.
+          load: true
+          push: false
+          tags: sage-compile-local:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            CUDA_ARCHITECTURES=8.0;8.6;8.9;9.0+PTX
+
+      - name: Extract wheel from image
+        run: |
+          mkdir -p dist
+          docker run --rm \
+            -v "$(pwd)/dist:/out" \
+            sage-compile-local:latest \
+            bash -c "cp /tmp/SageAttention/dist/*.whl /out/"
+          ls -lh dist/
+
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          WHEEL_NAME=$(basename "$WHEEL")
+          TAG="sage-${{ inputs.sage_tag }}-cu128-cp310"
+
+          cat > /tmp/release-notes.md << NOTES
+          Pre-built SageAttention wheel for the Wan2GP Docker image.
+
+          Architecture coverage: sm_80, sm_86, sm_89 (Ampere/Ada), sm_90 (Hopper),
+          plus forward-compatible PTX for Blackwell (sm_120 JIT via CUDA driver).
+
+          Built with: CUDA 12.8 | Python 3.10 | Linux x86_64
+
+          To use: replace the SageAttention compile block in the Dockerfile deps stage:
+            RUN pip install --no-deps \
+                https://github.com/${{ github.repository }}/releases/download/${TAG}/${WHEEL_NAME}
+          NOTES
+
+          gh release create "$TAG" \
+            --title "SageAttention ${{ inputs.sage_tag }} wheel (CUDA 12.8 / Python 3.10 / Linux x86_64)" \
+            --notes-file /tmp/release-notes.md \
+            --prerelease \
+            "$WHEEL"

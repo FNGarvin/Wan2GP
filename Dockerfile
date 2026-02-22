@@ -1,51 +1,67 @@
 # syntax=docker/dockerfile:1.4
-# Multi-stage Dockerfile for RunPod / cloud deployment.
+# Multi-stage Dockerfile for cloud/RunPod deployment.
 #
-# Stage 1 (deps):  apt + uv + PyTorch + pip requirements + SageAttention compile.
-#                  Cache-stable across source-code-only changes.
-# Stage 2 (runtime): copies project source into image (required for RunPod;
-#                    no host bind mount available). Persistent data (models,
-#                    outputs, caches) routes to /workspace/ which maps to the
-#                    RunPod pod volume.
+# Stages:
+#   sage-compile — apt + uv + PyTorch + SageAttention two-pass NVCC build.
+#                  Cache-stable; only rebuilds when these deps change.
+#                  Preserves dist/*.whl for use by the deps stage and
+#                  for wheel extraction by the sage-wheels.yml workflow.
+#   deps         — installs SageAttention wheel + project requirements
+#                  on top of sage-compile. Rebuilds on requirements.txt changes.
+#   runtime      — source copy + SSH + filebrowser + entrypoint.
 #
-# Build args:
-#   CUDA_ARCHITECTURES  Semicolon-separated SM targets for SageAttention.
-#                       Default covers Ampere, Ada, Hopper, and Blackwell
-#                       (via forward-compat PTX JIT on sm_120).
+# Build args (set at build time):
+#   CUDA_ARCHITECTURES   Semicolon-separated SM targets. Default covers
+#                        Ampere, Ada, Hopper, and Blackwell via PTX.
+#   FILEBROWSER_VERSION  filebrowser release tag to install.
 #
-# Local build (Podman):
-#   podman build --build-arg CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX" \
-#     -t wan2gp:local .
+# Runtime env vars (set on pod, no image rebuild needed):
+#   SSH_PUBLIC_KEY       Ed25519/RSA public key injected into /root/.ssh/authorized_keys
+#   SSH_PORT             Port for sshd. sshd is skipped if unset.
+#   FILEBROWSER_PORT     Port for filebrowser. Skipped if unset.
+#   WGP_PROFILE          Override auto-detected WanGP profile (1-5)
+#   WGP_ATTENTION        Override auto-detected attention mode (sage2/sage/sdpa)
+#   WGP_ARGS             Extra arguments passed to wgp.py
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — deps
-# Everything expensive lives here and is layer-cached between builds.
-# Invalidated only when apt packages, PyTorch version, or SageAttention tag change.
-# ─────────────────────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS deps
-
-# Broad SM target set:
-#   8.0  — A100/A800 (Ampere data center)
-#   8.6  — RTX 3060-3090 (Ampere consumer)
-#   8.9  — RTX 4060-4090 (Ada Lovelace)
-#   9.0+PTX — H100/H800 (Hopper) + forward-compat PTX for Blackwell JIT (sm_120)
 ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
+ARG FILEBROWSER_VERSION="2.32.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage: sage-compile
+# Stable cache layer. Only rebuilds when the CUDA base image, apt packages,
+# PyTorch version, or SageAttention tag/build script changes.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS sage-compile
+
+ARG CUDA_ARCHITECTURES
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System packages — single layer, cleanup in same RUN to avoid bloating intermediate layers
-# python3-dev provides Python.h, required for packages with C/Cython extensions (e.g. insightface)
+# python3-dev provides Python.h for C/Cython extension builds (e.g. insightface).
+# openssh-server is baked here so the apt step is one operation.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-dev python3-pip git wget curl cmake ninja-build \
-    libgl1 libglib2.0-0 ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
+    python3 python3-dev python3-pip \
+    git wget curl cmake ninja-build \
+    libgl1 libglib2.0-0 ffmpeg \
+    openssh-server \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast pip resolver/installer)
+# Configure sshd: root login via key only, no password auth.
+# Host keys are generated at build time so sshd can start without extra setup.
+RUN ssh-keygen -A && \
+    sed -i \
+    -e 's/#\?\(PermitRootLogin\).*/\1 yes/' \
+    -e 's/#\?\(PubkeyAuthentication\).*/\1 yes/' \
+    -e 's/#\?\(PasswordAuthentication\).*/\1 no/' \
+    /etc/ssh/sshd_config && \
+    mkdir -p /run/sshd
+
+# uv — fast Python package installer and resolver
 ADD https://astral.sh/uv/install.sh /uv-installer.sh
 RUN sh /uv-installer.sh && rm /uv-installer.sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# PyTorch — installed first so requirements.txt doesn't pull a generic CPU build.
-# CUDA 12.8 matches the base image; change both together if upgrading.
+# PyTorch first — prevents requirements.txt from pulling a generic CPU build.
+# If upgrading CUDA, change both the index URL and the FROM image above.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
     torch==2.10.0+cu128 \
@@ -53,69 +69,92 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     torchaudio==2.10.0+cu128 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# Project requirements
+# ── SageAttention 2++ two-pass NVCC build ────────────────────────────────────
+# NVCC is a cross-compiler — no physical GPU is required on the build host.
+# TORCH_CUDA_ARCH_LIST bypasses SageAttention's runtime GPU-detection probe.
+#
+# Why two passes?
+#   Single-pass compilation of sm_80–sm_90 can produce PTX valid only for the
+#   highest SM, causing assembler failures for lower targets. Separate passes
+#   eliminate this: sm_80/86/89 in pass 1, sm_90+PTX in pass 2.
+#   The +PTX suffix embeds forward-compat PTX so Blackwell (sm_120) can
+#   JIT-recompile it at first load via the CUDA driver.
+#
+# Why bdist_wheel --skip-build instead of setup.py install?
+#   setup.py install silently re-invokes build_ext with no MAX_JOBS limit,
+#   triggering a third expensive compile that OOM-kills the CI runner.
+#   bdist_wheel --skip-build packages the already-compiled .so files from
+#   the two passes into a wheel without any recompilation.
+#   The full arch list (8.0;8.6;8.9;9.0+PTX) is passed so the sm90 .so
+#   from pass 2 is included alongside sm80/86/89.
+#
+# We intentionally select MAX_JOBS=1 for free CI runners (~2 vCPU / 7 GB RAM).
+# On a machine with more resources you can increase this to speed up cold builds.
+#
+# Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
+# dist/*.whl is NOT deleted here — the deps stage installs it, and the
+# sage-wheels.yml workflow extracts it via a cache-hit build of this stage.
+ENV FORCE_CUDA="1"
+RUN pip install wheel && \
+    git clone --branch v2.2.0 --depth 1 \
+    https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
+    cd /tmp/SageAttention && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" python3 setup.py bdist_wheel --skip-build
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage: deps
+# Adds project requirements on top of the sage-compile base.
+# The sage-compile stage is a cache hit; only this stage rebuilds when
+# requirements.txt changes.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM sage-compile AS deps
+
+# Install SageAttention from the wheel built in sage-compile (no recompile).
+RUN pip install --no-deps /tmp/SageAttention/dist/*.whl && \
+    rm -rf /tmp/SageAttention
+
+# Project requirements.
+# --index-strategy unsafe-best-match: uv stops at the first index that has a
+# package name; this flag enables cross-index version resolution matching pip's
+# default behaviour. Needed because the aiinfra nightly index appears first but
+# does not have all versions (e.g. onnxruntime-gpu==1.22.0 is only on PyPI).
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
     --index-strategy unsafe-best-match \
     -r /tmp/requirements.txt
 
-# ── SageAttention 2++ ────────────────────────────────────────────────────────
-# Two-pass NVCC strategy (ported from comfy_con).
-# NVCC is a cross-compiler — no physical GPU is required on the build host.
-# TORCH_CUDA_ARCH_LIST bypasses SageAttention's runtime gpu-detection probe.
-#
-# Why two passes instead of one?
-#   Compiling sm_80/86/89 and sm_90 in a single NVCC invocation can produce
-#   PTX that is only valid for the highest SM, causing assembler failures for
-#   lower SM targets at link time. Separating the passes eliminates this.
-#
-# Pass 1: Ampere (sm_80, sm_86) + Ada (sm_89)
-# Pass 2: Hopper (sm_90) + forward-compat PTX — Blackwell (sm_120) JIT-recompiles
-#         this PTX via the CUDA driver on first load.
-#
-# Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
-#
-# We are intentionally selecting MAX_JOBS=1 to accomodate free, low-spec github runners. On
-# a local machine with more resources, you can increase this value to speed up the build.
-ENV FORCE_CUDA="1"
-RUN --mount=type=cache,target=/tmp/sa_cache \
-    git clone --branch v2.2.0 --depth 1 \
-    https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
-    cd /tmp/SageAttention && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" python3 setup.py install --skip-build && \
-    rm -rf /tmp/SageAttention
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — runtime
-# Thin application layer. Invalidated on every source change; deps stage is not.
+# Stage: runtime
+# Source copy + optional services + entrypoint.
+# Rebuilds on every source-code push; deps stage is a cache hit.
 # ─────────────────────────────────────────────────────────────────────────────
 FROM deps AS runtime
 
-# Non-root user — uid 1000
-RUN useradd -u 1000 -ms /bin/bash user
+ARG FILEBROWSER_VERSION
 
-# Project source baked into the image (no host bind mount for cloud/RunPod deployments)
+# Filebrowser — lightweight browser-based file manager (optional, env-gated)
+RUN curl -fsSL \
+    "https://github.com/filebrowser/filebrowser/releases/download/v${FILEBROWSER_VERSION}/linux-amd64-filebrowser.tar.gz" \
+    -o /tmp/fb.tar.gz && \
+    tar -xzf /tmp/fb.tar.gz -C /usr/local/bin/ filebrowser && \
+    rm /tmp/fb.tar.gz
+
+# Project source baked into image (no host bind mount for cloud deployments).
+# /workspace/ maps to the pod network volume and persists across restarts.
 WORKDIR /workspace/wan2gp
-COPY --chown=user:user . .
+COPY . .
 
-# Persistent data directories live under /workspace/ which maps to the RunPod
-# pod volume — survives container restarts, not image rebuilds.
-#   /workspace/models            — downloaded model weights
-#   /workspace/outputs           — generated video/image output
-#   /workspace/.cache/huggingface — HF hub cache (large; keep persistent)
-#   /workspace/.cache/triton     — compiled Triton kernels (expensive; keep persistent)
 RUN mkdir -p \
     /workspace/models \
     /workspace/outputs \
     /workspace/.cache/huggingface \
-    /workspace/.cache/triton && \
-    chown -R user:user /workspace
+    /workspace/.cache/triton
 
-COPY --chown=user:user entrypoint.sh /entrypoint.sh
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 7860
+EXPOSE 7860 22
 ENTRYPOINT ["/entrypoint.sh"]

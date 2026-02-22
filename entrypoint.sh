@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 #
 # entrypoint.sh
-# Container entrypoint. Detects GPU model and VRAM at runtime, selects the
-# appropriate WanGP profile (1-5) and attention mode (sage2/sage/sdpa), then
-# launches wgp.py. Persistent data directories are routed to /workspace/ for
-# RunPod pod-volume persistence.
+# Container entrypoint for cloud/RunPod deployment.
 #
-# Runtime overrides (env vars):
-#   WGP_PROFILE   — override auto-detected profile (1-5)
-#   WGP_ATTENTION — override auto-detected attention mode
-#   WGP_ARGS      — additional wgp.py arguments (e.g. "--compile --teacache 2.0")
-#   CUDA_VISIBLE_DEVICES — standard NVIDIA env; respected automatically
+# Optionally starts sshd and filebrowser as background services, then
+# detects the GPU at runtime to auto-select the WanGP profile (1-5) and
+# attention mode (sage2/sage/sdpa) before launching wgp.py.
+#
+# Runtime overrides (env vars — no image rebuild needed):
+#   SSH_PUBLIC_KEY      Public key appended to /root/.ssh/authorized_keys
+#   SSH_PORT            Start sshd on this port. Skipped if unset.
+#   FILEBROWSER_PORT    Start filebrowser on this port. Skipped if unset.
+#   WGP_PROFILE         Force a specific WanGP profile (1-5)
+#   WGP_ATTENTION       Force attention mode (sage2/sage/sdpa)
+#   WGP_ARGS            Extra wgp.py arguments (e.g. "--compile --teacache 2.0")
 
 set -euo pipefail
 
-export HOME=/home/user
 export PYTHONUNBUFFERED=1
 
-# ── Persistent cache dirs (RunPod pod volume) ────────────────────────────────
+# ── Persistent cache dirs (pod network volume) ───────────────────────────────
 export HF_HOME=/workspace/.cache/huggingface
 export TRITON_CACHE_DIR=/workspace/.cache/triton
 
@@ -36,6 +38,35 @@ export TORCH_ALLOW_TF32_CUDNN=1
 export SDL_AUDIODRIVER=dummy
 export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 
+# ── SSH key injection ─────────────────────────────────────────────────────────
+if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    echo "${SSH_PUBLIC_KEY}" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    echo "[INFO] SSH public key injected."
+fi
+
+# ── sshd ─────────────────────────────────────────────────────────────────────
+if [ -n "${SSH_PORT:-}" ]; then
+    echo "[INFO] Starting sshd on port ${SSH_PORT}..."
+    sed -i "s/#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
+    mkdir -p /run/sshd
+    /usr/sbin/sshd
+fi
+
+# ── Filebrowser ───────────────────────────────────────────────────────────────
+if [ -n "${FILEBROWSER_PORT:-}" ]; then
+    echo "[INFO] Starting filebrowser on port ${FILEBROWSER_PORT}..."
+    mkdir -p /root/.filebrowser
+    nohup /usr/local/bin/filebrowser \
+        --address 0.0.0.0 \
+        --port "${FILEBROWSER_PORT}" \
+        --database /root/.filebrowser/filebrowser.db \
+        --root / --noauth \
+        &>/root/.filebrowser/filebrowser.log &
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GPU detection helpers (ported from run-docker-cuda-deb.sh)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,13 +81,13 @@ _detect_vram_gb() {
     echo $(( mb / 1024 ))
 }
 
-# Maps GPU name → WanGP profile number (1-5).
+# Maps GPU name + VRAM → WanGP profile number (1-5).
 # Profile definitions (from WanGP UI):
-#   1 HighRAM_HighVRAM  48GB+ RAM, 24GB+ VRAM (fastest short video; RTX 3090/4090)
-#   2 HighRAM_LowVRAM   48GB+ RAM, 12GB+ VRAM (recommended; most versatile)
-#   3 LowRAM_HighVRAM   32GB+ RAM, 24GB+ VRAM (RTX 3090/4090 with limited RAM)
-#   4 LowRAM_LowVRAM    32GB+ RAM, 12GB+ VRAM (default)
-#   5 VeryLowRAM_LowVRAM 16GB+ RAM, 10GB+ VRAM (fail-safe; slow)
+#   1 HighRAM_HighVRAM  48GB+ RAM, 24GB+ VRAM
+#   2 HighRAM_LowVRAM   48GB+ RAM, 12GB+ VRAM  (recommended for most)
+#   3 LowRAM_HighVRAM   32GB+ RAM, 24GB+ VRAM
+#   4 LowRAM_LowVRAM    32GB+ RAM, 12GB+ VRAM  (default)
+#   5 VeryLowRAM_LowVRAM 16GB+ RAM, 10GB+ VRAM (fail-safe)
 _map_profile() {
     local name="$1" vram_gb="$2"
     case "$name" in
@@ -77,7 +108,7 @@ _map_profile() {
     esac
 }
 
-# Maps GPU name → attention mode (sage2 / sage / sdpa)
+# Maps GPU name → attention mode
 _map_attention() {
     local name="$1"
     case "$name" in
@@ -91,10 +122,7 @@ _map_attention() {
     esac
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Runtime GPU detection
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── Runtime GPU detection ─────────────────────────────────────────────────────
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "[WARN] nvidia-smi not found — GPU passthrough may be missing." >&2
     PROFILE=${WGP_PROFILE:-4}
@@ -110,14 +138,11 @@ fi
 
 echo "[INFO] GPU: ${GPU_NAME} | VRAM: ${VRAM_GB}GB | Profile: ${PROFILE} | Attention: ${ATTN}"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Launch
-# ─────────────────────────────────────────────────────────────────────────────
-
-exec su -p user -c "cd /workspace/wan2gp && \
-    python3 wgp.py \
-        --listen \
-        --profile ${PROFILE} \
-        --attention ${ATTN} \
-        ${WGP_ARGS:-} \
-        $*"
+# ── Launch ────────────────────────────────────────────────────────────────────
+cd /workspace/wan2gp
+exec python3 wgp.py \
+    --listen \
+    --profile "${PROFILE}" \
+    --attention "${ATTN}" \
+    ${WGP_ARGS:-} \
+    "$@"
