@@ -104,10 +104,11 @@ RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
+    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" && \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
     TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
     python3 setup.py build_py && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" python3 setup.py bdist_wheel --skip-build && \
+    python3 setup.py bdist_wheel --skip-build && \
     mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
     pip install --no-deps /tmp/sa_dist/*.whl && \
     rm -rf /tmp/SageAttention
