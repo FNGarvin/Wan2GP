@@ -1,8 +1,4 @@
 # syntax=docker/dockerfile:1.4
-# FNGarvin - Wan2GP Project
-# License: TODO: INSERT LICENSE
-# Year: 2026
-#
 # Multi-stage Dockerfile for RunPod / cloud deployment.
 #
 # Stage 1 (deps):  apt + uv + PyTorch + pip requirements + SageAttention compile.
@@ -117,5 +113,3 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 7860
 ENTRYPOINT ["/entrypoint.sh"]
-
-# EOF Dockerfile

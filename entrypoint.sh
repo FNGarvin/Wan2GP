@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# FNGarvin - Wan2GP Project
-# License: TODO: INSERT LICENSE
-# Year: 2026
 #
 # entrypoint.sh
 # Container entrypoint. Detects GPU model and VRAM at runtime, selects the
@@ -124,5 +121,3 @@ exec su -p user -c "cd /workspace/wan2gp && \
         --attention ${ATTN} \
         ${WGP_ARGS:-} \
         $*"
-
-# EOF entrypoint.sh

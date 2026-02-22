@@ -1,7 +1,3 @@
-# FNGarvin - Wan2GP Project
-# License: TODO: INSERT LICENSE
-# Year: 2026
-#
 # dependabot.yml
 # Dependabot configuration for automated dependency updates.
 #
@@ -19,5 +15,3 @@ updates:
     labels:
       - dependencies
       - ci
-
-# EOF dependabot.yml

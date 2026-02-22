@@ -7,5 +7,3 @@ rules:
   line-length:
     max: 120
   truthy: disable
-
-# EOF .yamllint
