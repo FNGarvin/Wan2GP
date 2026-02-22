@@ -55,7 +55,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Project requirements
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system -r /tmp/requirements.txt
+    uv pip install --system \
+    --index-strategy unsafe-best-match \
+    -r /tmp/requirements.txt
 
 # ── SageAttention 2++ ────────────────────────────────────────────────────────
 # Two-pass NVCC strategy (ported from comfy_con).
