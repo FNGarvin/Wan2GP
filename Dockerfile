@@ -80,28 +80,30 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 #   The +PTX suffix embeds forward-compat PTX so Blackwell (sm_120) can
 #   JIT-recompile it at first load via the CUDA driver.
 #
-# Why bdist_wheel --skip-build instead of setup.py install?
-#   setup.py install silently re-invokes build_ext with no MAX_JOBS limit,
-#   triggering a third expensive compile that OOM-kills the CI runner.
-#   bdist_wheel --skip-build packages the already-compiled .so files from
-#   the two passes into a wheel without any recompilation.
-#   The full arch list (8.0;8.6;8.9;9.0+PTX) is passed so the sm90 .so
-#   from pass 2 is included alongside sm80/86/89.
+# Why pip wheel instead of setup.py build_ext + bdist_wheel --skip-build?
+#   setup.py install --skip-build and bdist_wheel --skip-build both silently
+#   omit the compiled C extension .so files, causing 'cannot import sageattn
+#   (unknown location)' at runtime. pip wheel builds a guaranteed binary wheel
+#   with .so files included, and pip install from it is a complete installation.
+#   Single-pass 8.0;8.6;8.9;9.0+PTX is safe here — SageAttention v2.2.0 uses
+#   SM-specific extension modules that each target only their own SM
+#   (_qattn_sm80, _qattn_sm89, _qattn_sm90), so no cross-arch PTX conflict.
 #
 # We intentionally select MAX_JOBS=1 for free CI runners (~2 vCPU / 7 GB RAM).
 # On a machine with more resources you can increase this to speed up cold builds.
 #
 # Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
-# dist/*.whl is NOT deleted here — the deps stage installs it, and the
+# /tmp/sa_dist/*.whl is NOT deleted — the deps stage installs it, and the
 # sage-wheels.yml workflow extracts it via a cache-hit build of this stage.
 ENV FORCE_CUDA="1"
 RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" python3 setup.py bdist_wheel --skip-build
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" MAX_JOBS=1 \
+    pip wheel --no-deps --no-build-isolation . -w /tmp/sa_dist/ && \
+    pip install --no-deps /tmp/sa_dist/*.whl && \
+    rm -rf /tmp/SageAttention
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: deps

@@ -67,7 +67,7 @@ jobs:
           docker run --rm \
             -v "$(pwd)/dist:/out" \
             sage-compile-local:latest \
-            bash -c "cp /tmp/SageAttention/dist/*.whl /out/"
+            bash -c "cp /tmp/sa_dist/*.whl /out/"
           ls -lh dist/
 
       - name: Publish pre-release
