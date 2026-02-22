@@ -39,10 +39,11 @@ export SDL_AUDIODRIVER=dummy
 export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 
 # ── SSH key injection ─────────────────────────────────────────────────────────
-if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+_SSH_KEY="${SSH_PUBLIC_KEY:-${PUBLIC_KEY:-}}"
+if [ -n "$_SSH_KEY" ]; then
     mkdir -p /root/.ssh
     chmod 700 /root/.ssh
-    echo "${SSH_PUBLIC_KEY}" >> /root/.ssh/authorized_keys
+    echo "$_SSH_KEY" >> /root/.ssh/authorized_keys
     chmod 600 /root/.ssh/authorized_keys
     echo "[INFO] SSH public key injected."
 fi
