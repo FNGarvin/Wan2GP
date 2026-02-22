@@ -80,28 +80,35 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 #   The +PTX suffix embeds forward-compat PTX so Blackwell (sm_120) can
 #   JIT-recompile it at first load via the CUDA driver.
 #
-# Why pip wheel instead of setup.py build_ext + bdist_wheel --skip-build?
-#   setup.py install --skip-build and bdist_wheel --skip-build both silently
-#   omit the compiled C extension .so files, causing 'cannot import sageattn
-#   (unknown location)' at runtime. pip wheel builds a guaranteed binary wheel
-#   with .so files included, and pip install from it is a complete installation.
-#   Single-pass 8.0;8.6;8.9;9.0+PTX is safe here — SageAttention v2.2.0 uses
-#   SM-specific extension modules that each target only their own SM
-#   (_qattn_sm80, _qattn_sm89, _qattn_sm90), so no cross-arch PTX conflict.
+# Why two passes and why build_py before bdist_wheel?
+#   qk_int_sv_f8_cuda_sm90.cu uses wgmma/mbarrier instructions only valid on
+#   sm_90+. A single-pass compile with 8.0;8.6;8.9;9.0+PTX tries to assemble
+#   sm_90 PTX for sm_86 targets → ptxas fatal error. Two passes isolate it:
+#   Pass 1: Ampere/Ada (sm_80, sm_86, sm_89) — never sees sm_90 kernels.
+#   Pass 2: Hopper (sm_90+PTX) — only sm_90 kernels compiled.
+#
+#   build_ext populates build/lib.* with compiled .so files only. The Python
+#   source files (__init__.py, sageattn.py, etc.) live in the source tree.
+#   Without build_py, bdist_wheel --skip-build packages .so files with no
+#   Python package structure → broken, unimportable installation. build_py
+#   copies the source .py files into build/lib.* so the wheel is complete.
 #
 # We intentionally select MAX_JOBS=1 for free CI runners (~2 vCPU / 7 GB RAM).
 # On a machine with more resources you can increase this to speed up cold builds.
 #
 # Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
-# /tmp/sa_dist/*.whl is NOT deleted — the deps stage installs it, and the
-# sage-wheels.yml workflow extracts it via a cache-hit build of this stage.
+# /tmp/sa_dist/*.whl is preserved (not deleted) for the deps stage and for
+# wheel extraction by the sage-wheels.yml workflow.
 ENV FORCE_CUDA="1"
 RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" MAX_JOBS=1 \
-    pip wheel --no-deps --no-build-isolation . -w /tmp/sa_dist/ && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
+    python3 setup.py build_py && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" python3 setup.py bdist_wheel --skip-build && \
+    mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
     pip install --no-deps /tmp/sa_dist/*.whl && \
     rm -rf /tmp/SageAttention
 
