@@ -121,9 +121,8 @@ RUN pip install wheel packaging && \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM sage-compile AS deps
 
-# Install SageAttention from the wheel built in sage-compile (no recompile).
-RUN pip install --no-deps /tmp/SageAttention/dist/*.whl && \
-    rm -rf /tmp/SageAttention
+# SageAttention is already installed in sage-compile's site-packages.
+# /tmp/sa_dist/*.whl is preserved for sage-wheels.yml extraction.
 
 # Project requirements.
 # --index-strategy unsafe-best-match: uv stops at the first index that has a
