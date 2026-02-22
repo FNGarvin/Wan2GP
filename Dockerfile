@@ -95,7 +95,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # dist/*.whl is NOT deleted here — the deps stage installs it, and the
 # sage-wheels.yml workflow extracts it via a cache-hit build of this stage.
 ENV FORCE_CUDA="1"
-RUN pip install wheel && \
+RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
