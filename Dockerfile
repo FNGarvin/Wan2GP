@@ -75,6 +75,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 #         this PTX via the CUDA driver on first load.
 #
 # Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
+#
+# We are intentionally selecting MAX_JOBS=1 to accomodate free, low-spec github runners. On
+# a local machine with more resources, you can increase this value to speed up the build.
 ENV FORCE_CUDA="1"
 RUN --mount=type=cache,target=/tmp/sa_cache \
     git clone --branch v2.2.0 --depth 1 \
@@ -91,7 +94,7 @@ RUN --mount=type=cache,target=/tmp/sa_cache \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM deps AS runtime
 
-# Non-root user — uid 1000 is the RunPod convention
+# Non-root user — uid 1000
 RUN useradd -u 1000 -ms /bin/bash user
 
 # Project source baked into the image (no host bind mount for cloud/RunPod deployments)
