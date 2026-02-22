@@ -85,7 +85,7 @@ RUN --mount=type=cache,target=/tmp/sa_cache \
     cd /tmp/SageAttention && \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
     TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9"             python3 setup.py install && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" python3 setup.py install --skip-build && \
     rm -rf /tmp/SageAttention
 
 # ─────────────────────────────────────────────────────────────────────────────
