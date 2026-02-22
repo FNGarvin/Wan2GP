@@ -80,8 +80,8 @@ RUN --mount=type=cache,target=/tmp/sa_cache \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=4 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=4 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=2 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=2 python3 setup.py build_ext && \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9"             python3 setup.py install && \
     rm -rf /tmp/SageAttention
 
