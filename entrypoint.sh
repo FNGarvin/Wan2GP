@@ -50,7 +50,8 @@ export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 # Forced for PyTorch 2.10.0+cu128 compatibility on sm_89 (Ada/4090).
 # The binary omits sm_89 from its internal list; exporting this env var
 # triggers the correct JIT/dispatch behavior for kernels (like FP8).
-export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
+# Added SM 100/120 for native Blackwell support.
+export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 
 # ── SSH key injection ─────────────────────────────────────────────────────────
 _SSH_KEY="${SSH_PUBLIC_KEY:-${PUBLIC_KEY:-}}"

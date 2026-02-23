@@ -32,7 +32,7 @@ ARG FILEBROWSER_VERSION="2.32.0"
 # ─────────────────────────────────────────────────────────────────────────────
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS base
 
-ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
+ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -63,9 +63,9 @@ RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
-    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" && \
+    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX" && \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="9.0;10.0;12.0+PTX" MAX_JOBS=1 python3 setup.py build_ext && \
     python3 setup.py build_py && \
     python3 setup.py bdist_wheel --skip-build && \
     mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
