@@ -69,49 +69,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     torchaudio==2.10.0+cu128 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# ── SageAttention 2++ two-pass NVCC build ────────────────────────────────────
-# NVCC is a cross-compiler — no physical GPU is required on the build host.
-# TORCH_CUDA_ARCH_LIST bypasses SageAttention's runtime GPU-detection probe.
-#
-# Why two passes?
-#   Single-pass compilation of sm_80–sm_90 can produce PTX valid only for the
-#   highest SM, causing assembler failures for lower targets. Separate passes
-#   eliminate this: sm_80/86/89 in pass 1, sm_90+PTX in pass 2.
-#   The +PTX suffix embeds forward-compat PTX so Blackwell (sm_120) can
-#   JIT-recompile it at first load via the CUDA driver.
-#
-# Why two passes and why build_py before bdist_wheel?
-#   qk_int_sv_f8_cuda_sm90.cu uses wgmma/mbarrier instructions only valid on
-#   sm_90+. A single-pass compile with 8.0;8.6;8.9;9.0+PTX tries to assemble
-#   sm_90 PTX for sm_86 targets → ptxas fatal error. Two passes isolate it:
-#   Pass 1: Ampere/Ada (sm_80, sm_86, sm_89) — never sees sm_90 kernels.
-#   Pass 2: Hopper (sm_90+PTX) — only sm_90 kernels compiled.
-#
-#   build_ext populates build/lib.* with compiled .so files only. The Python
-#   source files (__init__.py, sageattn.py, etc.) live in the source tree.
-#   Without build_py, bdist_wheel --skip-build packages .so files with no
-#   Python package structure → broken, unimportable installation. build_py
-#   copies the source .py files into build/lib.* so the wheel is complete.
-#
-# We intentionally select MAX_JOBS=1 for free CI runners (~2 vCPU / 7 GB RAM).
-# On a machine with more resources you can increase this to speed up cold builds.
-#
-# Pinned to v2.2.0 (eb615cf6) for reproducibility. Bump tag via single-line PR.
-# /tmp/sa_dist/*.whl is preserved (not deleted) for the deps stage and for
-# wheel extraction by the sage-wheels.yml workflow.
-ENV FORCE_CUDA="1"
-RUN pip install wheel packaging && \
-    git clone --branch v2.2.0 --depth 1 \
-    https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
-    cd /tmp/SageAttention && \
-    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
-    python3 setup.py build_py && \
-    python3 setup.py bdist_wheel --skip-build && \
-    mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
-    pip install --no-deps /tmp/sa_dist/*.whl && \
-    rm -rf /tmp/SageAttention
+# ── SageAttention 2++ ────────────────────────────────────────────────────────
+# Distributing a pre-built wheel avoids the 30-minute NVCC recompile tax.
+# The REPO_OWNER default is overridden by GHA to ensure we always pull from
+# local releases (Fork or Upstream) when built via CI.
+ARG SAGE_VERSION="v2.2.0"
+ARG REPO_OWNER="FNGarvin/Wan2GP"
+RUN pip install --no-cache-dir \
+    "https://github.com/${REPO_OWNER}/releases/download/sage-${SAGE_VERSION}-cu128-cp310/sageattention-2.2.0-cp310-cp310-linux_x86_64.whl"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: deps

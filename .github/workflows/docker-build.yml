@@ -71,3 +71,4 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             CUDA_ARCHITECTURES=8.0;8.6;8.9;9.0+PTX
+            REPO_OWNER=${{ github.repository }}

@@ -84,7 +84,7 @@ jobs:
           # If triggered by push, sage_tag input is empty. Fallback to extracting from Dockerfile.
           SAGE_VERSION="${{ inputs.sage_tag }}"
           if [ -z "$SAGE_VERSION" ]; then
-            SAGE_VERSION=$(grep -oP 'git clone --branch \K[v0-9.]+' Dockerfile | head -1)
+            SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1)
           fi
           
           TAG="sage-${SAGE_VERSION}-cu128-cp310"
