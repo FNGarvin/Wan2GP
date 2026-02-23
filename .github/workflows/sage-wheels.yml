@@ -7,7 +7,7 @@
 #      If a successful docker-build.yml run has completed, this stage is a full
 #      cache hit and completes in seconds — no NVCC recompilation.
 #   2. Runs a short-lived container from that image to copy out dist/*.whl.
-#   3. Creates a GitHub pre-release tagged sage-<version>-cu128-cp310 and
+#   3. Creates a GitHub pre-release tagged sage-<version>-cu128-cp312 and
 #      uploads the wheel as an asset.
 #
 # Once a wheel is published, update the 'deps' stage in the Dockerfile to
@@ -80,8 +80,12 @@ jobs:
           
           # Rename for descriptive release
           ORIG_WHEEL=$(ls dist/*.whl | head -1)
-          SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1)
-          NEW_WHEEL="sageattention-${SAGE_VERSION}-cp310-linux_x86_64-${{ matrix.suffix }}.whl"
+          # Strip 'v' for standard wheel versioning
+          SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1 | sed 's/^v//')
+          # Suffixes must not contain hyphens if used in the version part of the filename
+          SAFE_SUFFIX=$(echo "${{ matrix.suffix }}" | tr '-' '.')
+          NEW_WHEEL="sageattention-${SAGE_VERSION}+${SAFE_SUFFIX}-cp312-cp312-linux_x86_64.whl"
+          
           mv "$ORIG_WHEEL" "dist/$NEW_WHEEL"
           ls -lh dist/
 
@@ -91,14 +95,23 @@ jobs:
         run: |
           WHEEL=$(ls dist/*.whl | head -1)
           WHEEL_NAME=$(basename "$WHEEL")
+          # Handle version with/without 'v'
           SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1)
-          TAG="sage-${SAGE_VERSION}-cu128-cp310"
+          VTAG=$(echo "$SAGE_VERSION" | grep -q '^v' && echo "$SAGE_VERSION" || echo "v$SAGE_VERSION")
+          TAG="sage-${VTAG}-cu128-cp312"
 
-          # Use a lock-file approach to ensure the release is created exactly once
-          # but allow all parallel jobs to upload to it.
-          gh release view "$TAG" || gh release create "$TAG" \
-            --title "SageAttention ${SAGE_VERSION} Parallel Factory (CUDA 12.8)" \
-            --notes "Parallel architecture-specific wheels for Wan2GP." \
-            --prerelease --latest=false
+          # Recreate release if it's older than 1 hour to refresh the 'age' label
+          # and ensure a clean slate for the parallel uploads.
+          if gh release view "$TAG" --json createdAt -q '.createdAt' 1>/dev/null 2>&1 && \
+             gh release view "$TAG" --json createdAt -q '.createdAt' | grep -q "$(date -u +%Y-%m-%dT%H)"; then
+            echo "Release is current."
+          else
+            echo "Refreshing release..."
+            gh release delete "$TAG" --yes || true
+            gh release create "$TAG" \
+              --title "SageAttention ${SAGE_VERSION} Parallel Factory (CUDA 12.8 | P3.12)" \
+              --notes "Parallel architecture-specific wheels for Wan2GP. (Native sm_8x/9x/10x/12x | Python 3.12)" \
+              --prerelease --latest=false
+          fi
 
           gh release upload "$TAG" "$WHEEL" --clobber

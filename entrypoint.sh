@@ -47,11 +47,13 @@ export SDL_AUDIODRIVER=dummy
 export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 
 # ── Architecture hints ───────────────────────────────────────────────────────
-# Forced for PyTorch 2.10.0+cu128 compatibility on sm_89 (Ada/4090).
-# The binary omits sm_89 from its internal list; exporting this env var
-# triggers the correct JIT/dispatch behavior for kernels (like FP8).
-# Added SM 100/120 for native Blackwell support.
-export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
+# We derive TORCH_CUDA_ARCH_LIST from the image's CUDA_ARCHITECTURES.
+# This ensures PyTorch uses the correct kernels (including Sm 100/120).
+if [ -n "${CUDA_ARCHITECTURES:-}" ]; then
+    export TORCH_CUDA_ARCH_LIST="${CUDA_ARCHITECTURES}"
+else
+    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
+fi
 
 # ── SSH key injection ─────────────────────────────────────────────────────────
 _SSH_KEY="${SSH_PUBLIC_KEY:-${PUBLIC_KEY:-}}"
@@ -64,11 +66,10 @@ if [ -n "$_SSH_KEY" ]; then
 fi
 
 # ── sshd ─────────────────────────────────────────────────────────────────────
-# Only starts if an SSH key was provided. Default to port 22 (Standard RunPod).
-if [ -n "$_SSH_KEY" ]; then
-    _PORT="${SSH_PORT:-22}"
-    echo "[INFO] Starting sshd on port ${_PORT}..."
-    sed -i "s/#\?Port .*/Port ${_PORT}/" /etc/ssh/sshd_config
+# Only starts if SSH_PORT is explicitly set.
+if [ -n "${SSH_PORT:-}" ]; then
+    echo "[INFO] Starting sshd on port ${SSH_PORT}..."
+    sed -i "s/#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
     mkdir -p /run/sshd
     /usr/sbin/sshd
 fi
@@ -166,21 +167,23 @@ if [ -d "/opt/sage_wheels" ] && command -v nvidia-smi >/dev/null 2>&1; then
     _MAJOR=$(echo "$_CAP" | cut -d. -f1)
     
     if [ "$_MAJOR" -eq 8 ]; then
-        _W_SUFFIX="ampere-ada-rtx30-40"
+        _W_SUFFIX="ampere.ada.rtx30.40"
     elif [ "$_MAJOR" -eq 9 ] || [ "$_MAJOR" -eq 10 ]; then
-        _W_SUFFIX="hopper-h100-h200"
+        _W_SUFFIX="hopper.h100.h200"
     elif [ "$_MAJOR" -eq 12 ]; then
-        _W_SUFFIX="blackwell-rtx50"
+        _W_SUFFIX="blackwell.rtx50"
     else
-        # Fallback to Blackwell's future-proof PTX wheel for unknown generations
-        _W_SUFFIX="blackwell-rtx50"
+        _W_SUFFIX="blackwell.rtx50"
     fi
 
-    echo "[INFO] Detected SM ${_CAP} - Installing native SageAttention wheel..."
-    if ls /opt/sage_wheels/*-${_W_SUFFIX}.whl 1> /dev/null 2>&1; then
-        pip install --no-deps /opt/sage_wheels/*-${_W_SUFFIX}.whl
+    echo "[INFO] Detected SM ${_CAP} - Selecting native SageAttention wheel part: ${_W_SUFFIX}"
+    _WHEEL_PATH=$(ls /opt/sage_wheels/*+${_W_SUFFIX}-*.whl 2>/dev/null | head -1 || true)
+    
+    if [ -n "$_WHEEL_PATH" ]; then
+        echo "[INFO] Installing native wheel: $(basename "$_WHEEL_PATH")"
+        pip install --no-deps "$_WHEEL_PATH" --break-system-packages || echo "[ERROR] Failed to install wheel."
     else
-        echo "[WARN] No matching wheel found for architecture ${_W_SUFFIX}. Skipping install."
+        echo "[WARN] No matching wheel found for architecture suffix '${_W_SUFFIX}'."
     fi
 fi
 

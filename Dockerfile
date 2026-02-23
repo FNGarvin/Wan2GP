@@ -23,16 +23,16 @@
 #   WGP_ATTENTION        Override auto-detected attention mode (sage2/sage/sdpa)
 #   WGP_ARGS             Extra arguments passed to wgp.py
 
-ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
+ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 ARG FILEBROWSER_VERSION="2.32.0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: base
 # Common base for both tools (compiler) and production images.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS base
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS base
 
-ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
+ARG CUDA_ARCHITECTURES
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv==0.6.2
+RUN pip install --no-cache-dir uv==0.6.2 --break-system-packages
 ENV PATH="/root/.local/bin:${PATH}"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -60,14 +60,14 @@ FROM base AS sage-tools
 
 ENV FORCE_CUDA="1"
 ARG CUDA_ARCHITECTURES
-RUN pip install wheel packaging && \
+RUN pip install wheel packaging --break-system-packages && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
     export TORCH_CUDA_ARCH_LIST="${CUDA_ARCHITECTURES}" && \
     MAX_JOBS=1 python3 setup.py bdist_wheel && \
     mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
-    pip install --no-deps /tmp/sa_dist/*.whl && \
+    pip install --no-deps /tmp/sa_dist/*.whl --break-system-packages && \
     rm -rf /tmp/SageAttention
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,14 +86,15 @@ RUN ssh-keygen -A && \
 
 # ── SageAttention 2++ ────────────────────────────────────────────────────────
 # We download ALL parallel factory wheels. entrypoint.sh installs the best match.
-ARG SAGE_VERSION="v2.2.0"
+ARG SAGE_VERSION="2.2.0"
 ARG REPO_OWNER="FNGarvin/Wan2GP"
 RUN mkdir -p /opt/sage_wheels && \
     cd /opt/sage_wheels && \
-    WURL="https://github.com/${REPO_OWNER}/releases/download/sage-${SAGE_VERSION}-cu128-cp310" && \
-    curl -L -O "${WURL}/sageattention-2.2.0-cp310-linux_x86_64-ampere-ada-rtx30-40.whl" && \
-    curl -L -O "${WURL}/sageattention-2.2.0-cp310-linux_x86_64-hopper-h100-h200.whl" && \
-    curl -L -O "${WURL}/sageattention-2.2.0-cp310-linux_x86_64-blackwell-rtx50.whl"
+    VTAG="v${SAGE_VERSION}" && \
+    WURL="https://github.com/${REPO_OWNER}/releases/download/sage-${VTAG}-cu128-cp312" && \
+    curl -L -O "${WURL}/sageattention-${SAGE_VERSION}+ampere.ada.rtx30.40-cp312-cp312-linux_x86_64.whl" && \
+    curl -L -O "${WURL}/sageattention-${SAGE_VERSION}+hopper.h100.h200-cp312-cp312-linux_x86_64.whl" && \
+    curl -L -O "${WURL}/sageattention-${SAGE_VERSION}+blackwell.rtx50-cp312-cp312-linux_x86_64.whl"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: deps
@@ -125,6 +126,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM deps AS runtime
 
 ARG FILEBROWSER_VERSION
+ARG CUDA_ARCHITECTURES
+ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 
 # Filebrowser — lightweight browser-based file manager (optional, env-gated)
 RUN curl -fsSL \

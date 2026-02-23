@@ -1,0 +1,10 @@
+.git/
+.github/
+private/
+.python-version
+.venv/
+__pycache__/
+*.whl
+dist/
+build/
+*.egg-info/
