@@ -71,10 +71,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # ── SageAttention 2++ ────────────────────────────────────────────────────────
 # Distributing a pre-built wheel avoids the 30-minute NVCC recompile tax.
-# The REPO_OWNER default is overridden by GHA to ensure we always pull from
-# local releases (Fork or Upstream) when built via CI.
-ARG SAGE_VERSION="v2.2.0"
-ARG REPO_OWNER="FNGarvin/Wan2GP"
+# This wheel targets sm_80, sm_86, sm_89, sm_90, and includes +PTX for sm_120.
 RUN pip install --no-cache-dir \
     "https://github.com/${REPO_OWNER}/releases/download/sage-${SAGE_VERSION}-cu128-cp310/sageattention-2.2.0-cp310-cp310-linux_x86_64.whl"
 
