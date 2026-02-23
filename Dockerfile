@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir uv==0.6.2 --break-system-packages
 ENV PATH="/root/.local/bin:${PATH}"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system \
+    uv pip install --system --break-system-packages \
     torch==2.10.0+cu128 \
     torchvision==0.25.0+cu128 \
     torchaudio==2.10.0+cu128 \
@@ -114,7 +114,7 @@ FROM sage-compile AS deps
 # does not have all versions (e.g. onnxruntime-gpu==1.22.0 is only on PyPI).
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system \
+    uv pip install --system --break-system-packages \
     --index-strategy unsafe-best-match \
     -r /tmp/requirements.txt
 
