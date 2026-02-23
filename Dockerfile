@@ -27,17 +27,14 @@ ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
 ARG FILEBROWSER_VERSION="2.32.0"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage: sage-compile
-# Stable cache layer. Only rebuilds when the CUDA base image, apt packages,
-# PyTorch version, or SageAttention tag/build script changes.
+# Stage: base
+# Common base for both tools (compiler) and production images.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS sage-compile
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS base
 
-ARG CUDA_ARCHITECTURES
+ARG CUDA_ARCHITECTURES="8.0;8.6;8.9;9.0+PTX"
 ENV DEBIAN_FRONTEND=noninteractive
 
-# python3-dev provides Python.h for C/Cython extension builds (e.g. insightface).
-# openssh-server is baked here so the apt step is one operation.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-dev python3-pip \
     git wget curl cmake ninja-build \
@@ -45,8 +42,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
-# Configure sshd: root login via key only, no password auth.
-# Host keys are generated at build time so sshd can start without extra setup.
+RUN pip install --no-cache-dir uv==0.6.2
+ENV PATH="/root/.local/bin:${PATH}"
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system \
+    torch==2.10.0+cu128 \
+    torchvision==0.25.0+cu128 \
+    torchaudio==2.10.0+cu128 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage: sage-tools
+# Full NVCC compiler stage. Targeted ONLY by the sage-wheels.yml robot.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM base AS sage-tools
+
+ENV FORCE_CUDA="1"
+RUN pip install wheel packaging && \
+    git clone --branch v2.2.0 --depth 1 \
+    https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
+    cd /tmp/SageAttention && \
+    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" && \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
+    TORCH_CUDA_ARCH_LIST="9.0+PTX"     MAX_JOBS=1 python3 setup.py build_ext && \
+    python3 setup.py build_py && \
+    python3 setup.py bdist_wheel --skip-build && \
+    mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
+    pip install --no-deps /tmp/sa_dist/*.whl && \
+    rm -rf /tmp/SageAttention
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage: sage-compile
+# Fast production stage. Downloads pre-built wheels from GitHub Releases.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM base AS sage-compile
+
 RUN ssh-keygen -A && \
     sed -i \
     -e 's/#\?\(PermitRootLogin\).*/\1 yes/' \
@@ -55,23 +86,12 @@ RUN ssh-keygen -A && \
     /etc/ssh/sshd_config && \
     mkdir -p /run/sshd
 
-# uv — fast Python package installer and resolver
-# Pinned version prevents non-deterministic 'ADD <URL>' cache busts.
-RUN pip install --no-cache-dir uv==0.6.2
-ENV PATH="/root/.local/bin:${PATH}"
-
-# PyTorch first — prevents requirements.txt from pulling a generic CPU build.
-# If upgrading CUDA, change both the index URL and the FROM image above.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system \
-    torch==2.10.0+cu128 \
-    torchvision==0.25.0+cu128 \
-    torchaudio==2.10.0+cu128 \
-    --index-url https://download.pytorch.org/whl/cu128
-
 # ── SageAttention 2++ ────────────────────────────────────────────────────────
 # Distributing a pre-built wheel avoids the 30-minute NVCC recompile tax.
-# This wheel targets sm_80, sm_86, sm_89, sm_90, and includes +PTX for sm_120.
+# The REPO_OWNER default is overridden by GHA to ensure we always pull from
+# local releases (Fork or Upstream) when built via CI.
+ARG SAGE_VERSION="v2.2.0"
+ARG REPO_OWNER="FNGarvin/Wan2GP"
 RUN pip install --no-cache-dir \
     "https://github.com/${REPO_OWNER}/releases/download/sage-${SAGE_VERSION}-cu128-cp310/sageattention-2.2.0-cp310-cp310-linux_x86_64.whl"
 
