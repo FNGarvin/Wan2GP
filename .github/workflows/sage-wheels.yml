@@ -81,7 +81,13 @@ jobs:
         run: |
           WHEEL=$(ls dist/*.whl | head -1)
           WHEEL_NAME=$(basename "$WHEEL")
-          TAG="sage-${{ inputs.sage_tag }}-cu128-cp310"
+          # If triggered by push, sage_tag input is empty. Fallback to extracting from Dockerfile.
+          SAGE_VERSION="${{ inputs.sage_tag }}"
+          if [ -z "$SAGE_VERSION" ]; then
+            SAGE_VERSION=$(grep -oP 'git clone --branch \K[v0-9.]+' Dockerfile | head -1)
+          fi
+          
+          TAG="sage-${SAGE_VERSION}-cu128-cp310"
 
           cat > /tmp/release-notes.md << NOTES
           Pre-built SageAttention wheel for the Wan2GP Docker image.
@@ -96,8 +102,13 @@ jobs:
                 https://github.com/${{ github.repository }}/releases/download/${TAG}/${WHEEL_NAME}
           NOTES
 
+          # Delete existing tag if we are re-pushed to the same infra version
+          gh release delete "$TAG" --yes || true
+          git push --delete origin "$TAG" || true
+
           gh release create "$TAG" \
-            --title "SageAttention ${{ inputs.sage_tag }} wheel (CUDA 12.8 / Python 3.10 / Linux x86_64)" \
+            --title "SageAttention ${SAGE_VERSION} wheel (CUDA 12.8 / Python 3.10 / Linux x86_64)" \
             --notes-file /tmp/release-notes.md \
             --prerelease \
+            --latest=false \
             "$WHEEL"
