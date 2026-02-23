@@ -38,6 +38,12 @@ export TORCH_ALLOW_TF32_CUDNN=1
 export SDL_AUDIODRIVER=dummy
 export PULSE_RUNTIME_PATH=/tmp/pulse-runtime
 
+# ── Architecture hints ───────────────────────────────────────────────────────
+# Forced for PyTorch 2.10.0+cu128 compatibility on sm_89 (Ada/4090).
+# The binary omits sm_89 from its internal list; exporting this env var
+# triggers the correct JIT/dispatch behavior for kernels (like FP8).
+export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
+
 # ── SSH key injection ─────────────────────────────────────────────────────────
 _SSH_KEY="${SSH_PUBLIC_KEY:-${PUBLIC_KEY:-}}"
 if [ -n "$_SSH_KEY" ]; then
