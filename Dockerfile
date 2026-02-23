@@ -56,8 +56,8 @@ RUN ssh-keygen -A && \
     mkdir -p /run/sshd
 
 # uv — fast Python package installer and resolver
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-RUN sh /uv-installer.sh && rm /uv-installer.sh
+# Pinned version prevents non-deterministic 'ADD <URL>' cache busts.
+RUN pip install --no-cache-dir uv==0.6.2
 ENV PATH="/root/.local/bin:${PATH}"
 
 # PyTorch first — prevents requirements.txt from pulling a generic CPU build.

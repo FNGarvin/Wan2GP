@@ -21,6 +21,11 @@
 name: SageAttention Pre-built Wheel
 
 on:
+  push:
+    branches:
+      - fng-infra
+      - main
+      - master
   workflow_dispatch:
     inputs:
       sage_tag:
