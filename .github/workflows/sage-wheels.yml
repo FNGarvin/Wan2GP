@@ -21,14 +21,6 @@
 name: SageAttention Pre-built Wheel
 
 on:
-  push:
-    branches:
-      - fng-infra
-      - main
-      - master
-    paths:
-      - 'Dockerfile'
-      - '.github/workflows/sage-wheels.yml'
   workflow_dispatch:
     inputs:
       sage_tag:
