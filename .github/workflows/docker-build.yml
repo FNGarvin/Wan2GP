@@ -11,6 +11,7 @@
 name: Docker Build & Push
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - fng-infra
