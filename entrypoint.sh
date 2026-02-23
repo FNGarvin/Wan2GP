@@ -55,14 +55,18 @@ if [ -n "$_SSH_KEY" ]; then
 fi
 
 # ── sshd ─────────────────────────────────────────────────────────────────────
-if [ -n "${SSH_PORT:-}" ]; then
-    echo "[INFO] Starting sshd on port ${SSH_PORT}..."
-    sed -i "s/#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
+# Only starts if an SSH key was provided. Default to port 22 (Standard RunPod).
+if [ -n "$_SSH_KEY" ]; then
+    _PORT="${SSH_PORT:-22}"
+    echo "[INFO] Starting sshd on port ${_PORT}..."
+    sed -i "s/#\?Port .*/Port ${_PORT}/" /etc/ssh/sshd_config
     mkdir -p /run/sshd
     /usr/sbin/sshd
 fi
 
 # ── Filebrowser ───────────────────────────────────────────────────────────────
+# Starts only if FILEBROWSER_PORT is set.
+# SECURITY: Scoped to /workspace/ to prevent accidental system file deletion.
 if [ -n "${FILEBROWSER_PORT:-}" ]; then
     echo "[INFO] Starting filebrowser on port ${FILEBROWSER_PORT}..."
     mkdir -p /root/.filebrowser
@@ -70,21 +74,22 @@ if [ -n "${FILEBROWSER_PORT:-}" ]; then
         --address 0.0.0.0 \
         --port "${FILEBROWSER_PORT}" \
         --database /root/.filebrowser/filebrowser.db \
-        --root / --noauth \
+        --root /workspace/ \
+        --noauth \
         &>/root/.filebrowser/filebrowser.log &
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GPU detection helpers (ported from run-docker-cuda-deb.sh)
+# GPU detection helpers (ported from run-docker-cuda-deb.sh, but with added fallbacks)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _detect_gpu_name() {
-    nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1
+    nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "unknown"
 }
 
 _detect_vram_gb() {
     local mb
-    mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+    mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "0")
     echo $(( mb / 1024 ))
 }
 
