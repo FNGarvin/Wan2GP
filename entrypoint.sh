@@ -159,6 +159,31 @@ fi
 
 echo "[INFO] GPU: ${GPU_NAME} | VRAM: ${VRAM_GB}GB | Profile: ${PROFILE} | Attention: ${ATTN}"
 
+# ── Dynamic SageAttention Install ───────────────────────────────────────────
+# We detect the Compute Capability to install the corresponding native wheel.
+if [ -d "/opt/sage_wheels" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    _CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits | head -1 || echo "0.0")
+    _MAJOR=$(echo "$_CAP" | cut -d. -f1)
+    
+    if [ "$_MAJOR" -eq 8 ]; then
+        _W_SUFFIX="ampere-ada-rtx30-40"
+    elif [ "$_MAJOR" -eq 9 ] || [ "$_MAJOR" -eq 10 ]; then
+        _W_SUFFIX="hopper-h100-h200"
+    elif [ "$_MAJOR" -eq 12 ]; then
+        _W_SUFFIX="blackwell-rtx50"
+    else
+        # Fallback to Blackwell's future-proof PTX wheel for unknown generations
+        _W_SUFFIX="blackwell-rtx50"
+    fi
+
+    echo "[INFO] Detected SM ${_CAP} - Installing native SageAttention wheel..."
+    if ls /opt/sage_wheels/*-${_W_SUFFIX}.whl 1> /dev/null 2>&1; then
+        pip install --no-deps /opt/sage_wheels/*-${_W_SUFFIX}.whl
+    else
+        echo "[WARN] No matching wheel found for architecture ${_W_SUFFIX}. Skipping install."
+    fi
+fi
+
 # ── Launch ────────────────────────────────────────────────────────────────────
 cd /workspace/wan2gp
 exec python3 wgp.py \

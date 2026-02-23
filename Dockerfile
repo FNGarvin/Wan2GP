@@ -59,15 +59,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM base AS sage-tools
 
 ENV FORCE_CUDA="1"
+ARG CUDA_ARCHITECTURES
 RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
-    export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX" && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" MAX_JOBS=1 python3 setup.py build_ext && \
-    TORCH_CUDA_ARCH_LIST="9.0;10.0;12.0+PTX" MAX_JOBS=1 python3 setup.py build_ext && \
-    python3 setup.py build_py && \
-    python3 setup.py bdist_wheel --skip-build && \
+    export TORCH_CUDA_ARCH_LIST="${CUDA_ARCHITECTURES}" && \
+    MAX_JOBS=1 python3 setup.py bdist_wheel && \
     mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
     pip install --no-deps /tmp/sa_dist/*.whl && \
     rm -rf /tmp/SageAttention
@@ -87,13 +85,15 @@ RUN ssh-keygen -A && \
     mkdir -p /run/sshd
 
 # ── SageAttention 2++ ────────────────────────────────────────────────────────
-# Distributing a pre-built wheel avoids the 30-minute NVCC recompile tax.
-# The REPO_OWNER default is overridden by GHA to ensure we always pull from
-# local releases (Fork or Upstream) when built via CI.
+# We download ALL parallel factory wheels. entrypoint.sh installs the best match.
 ARG SAGE_VERSION="v2.2.0"
 ARG REPO_OWNER="FNGarvin/Wan2GP"
-RUN pip install --no-cache-dir \
-    "https://github.com/${REPO_OWNER}/releases/download/sage-${SAGE_VERSION}-cu128-cp310/sageattention-2.2.0-cp310-cp310-linux_x86_64.whl"
+RUN mkdir -p /opt/sage_wheels && \
+    cd /opt/sage_wheels && \
+    WURL="https://github.com/${REPO_OWNER}/releases/download/sage-${SAGE_VERSION}-cu128-cp310" && \
+    curl -L -O "${WURL}/sageattention-2.2.0-cp310-linux_x86_64-ampere-ada-rtx30-40.whl" && \
+    curl -L -O "${WURL}/sageattention-2.2.0-cp310-linux_x86_64-hopper-h100-h200.whl" && \
+    curl -L -O "${WURL}/sageattention-2.2.0-cp310-linux_x86_64-blackwell-rtx50.whl"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: deps

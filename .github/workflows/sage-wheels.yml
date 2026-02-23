@@ -29,81 +29,76 @@ on:
         default: v2.2.0
 
 jobs:
-  extract-wheel:
-    name: Extract wheel from build cache
+  build-wheels:
+    name: Build ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ampere-ada-rtx-30-40
+            arch: "8.0;8.6;8.9"
+            suffix: ampere-ada-rtx30-40
+          - name: hopper-h100-h200
+            arch: "9.0;10.0"
+            suffix: hopper-h100-h200
+          - name: blackwell-rtx-50
+            arch: "12.0+PTX"
+            suffix: blackwell-rtx50
+
     permissions:
-      contents: write   # required to create releases
-      packages: read    # required to read GHA cache
+      contents: write
+      packages: read
 
     steps:
       - name: Checkout repository
-        # actions/checkout v4
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Docker Buildx
-        # docker/setup-buildx-action v3
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - name: Build sage-tools stage
-        # docker/build-push-action v6
+      - name: Build stage
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           target: sage-tools
-          # load: true makes the image available to the local Docker daemon
-          # so we can run a container from it in the next step.
           load: true
           push: false
-          tags: sage-tools-local:latest
+          tags: sage-tools-${{ matrix.suffix }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            CUDA_ARCHITECTURES=8.0;8.6;8.9;9.0+PTX
+            CUDA_ARCHITECTURES=${{ matrix.arch }}
 
-      - name: Extract wheel from image
+      - name: Extract and rename wheel
         run: |
           mkdir -p dist
           docker run --rm \
             -v "$(pwd)/dist:/out" \
-            sage-tools-local:latest \
+            sage-tools-${{ matrix.suffix }}:latest \
             bash -c "cp /tmp/sa_dist/*.whl /out/"
+          
+          # Rename for descriptive release
+          ORIG_WHEEL=$(ls dist/*.whl | head -1)
+          SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1)
+          NEW_WHEEL="sageattention-${SAGE_VERSION}-cp310-linux_x86_64-${{ matrix.suffix }}.whl"
+          mv "$ORIG_WHEEL" "dist/$NEW_WHEEL"
           ls -lh dist/
 
-      - name: Publish pre-release
+      - name: Publish to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           WHEEL=$(ls dist/*.whl | head -1)
           WHEEL_NAME=$(basename "$WHEEL")
-          # If triggered by push, sage_tag input is empty. Fallback to extracting from Dockerfile.
-          SAGE_VERSION="${{ inputs.sage_tag }}"
-          if [ -z "$SAGE_VERSION" ]; then
-            SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1)
-          fi
-          
+          SAGE_VERSION=$(grep -oP 'ARG SAGE_VERSION="\K[v0-9.]+' Dockerfile | head -1)
           TAG="sage-${SAGE_VERSION}-cu128-cp310"
 
-          cat > /tmp/release-notes.md << NOTES
-          Pre-built SageAttention wheel for the Wan2GP Docker image.
+          # Use a lock-file approach to ensure the release is created exactly once
+          # but allow all parallel jobs to upload to it.
+          gh release view "$TAG" || gh release create "$TAG" \
+            --title "SageAttention ${SAGE_VERSION} Parallel Factory (CUDA 12.8)" \
+            --notes "Parallel architecture-specific wheels for Wan2GP." \
+            --prerelease --latest=false
 
-          Architecture coverage: sm_80, sm_86, sm_89 (Ampere/Ada), sm_90 (Hopper),
-          plus forward-compatible PTX for Blackwell (sm_120 JIT via CUDA driver).
-
-          Built with: CUDA 12.8 | Python 3.10 | Linux x86_64
-
-          To use: replace the SageAttention compile block in the Dockerfile deps stage:
-            RUN pip install --no-deps \
-                https://github.com/${{ github.repository }}/releases/download/${TAG}/${WHEEL_NAME}
-          NOTES
-
-          # Delete existing tag if we are re-pushed to the same infra version
-          gh release delete "$TAG" --yes || true
-          git push --delete origin "$TAG" || true
-
-          gh release create "$TAG" \
-            --title "SageAttention ${SAGE_VERSION} wheel (CUDA 12.8 / Python 3.10 / Linux x86_64)" \
-            --notes-file /tmp/release-notes.md \
-            --prerelease \
-            --latest=false \
-            "$WHEEL"
+          gh release upload "$TAG" "$WHEEL" --clobber
