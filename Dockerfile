@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir uv==0.6.2 --break-system-packages
 ENV PATH="/root/.local/bin:${PATH}"
+ENV UV_HTTP_TIMEOUT=300
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --break-system-packages \
