@@ -23,6 +23,14 @@ export PYTHONUNBUFFERED=1
 export HF_HOME=/workspace/.cache/huggingface
 export TRITON_CACHE_DIR=/workspace/.cache/triton
 
+# ── Privacy & Telemetry Disable ──────────────────────────────────────────────
+export HF_HUB_DISABLE_TELEMETRY="1"
+export TRANSFORMERS_DISABLE_TELEMETRY="1"
+export HF_DATASETS_DISABLE_TELEMETRY="1"
+export DO_NOT_TRACK="1"
+export DISABLE_TELEMETRY="1"
+export GRADIO_ANALYTICS_ENABLED="False"
+
 # ── CPU thread tuning ────────────────────────────────────────────────────────
 _nproc=$(nproc)
 export OMP_NUM_THREADS=$_nproc
