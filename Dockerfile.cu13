@@ -34,9 +34,9 @@ ENV UV_HTTP_TIMEOUT=300
 # Install PyTorch cu130 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --break-system-packages \
-    torch==2.9.1+cu130 \
-    torchvision==0.24.1+cu130 \
-    torchaudio==2.9.1+cu130 \
+    torch==2.10.0+cu130 \
+    torchvision==0.25.0+cu130 \
+    torchaudio==2.10.0+cu130 \
     --index-url https://download.pytorch.org/whl/cu130
 
 # ─────────────────────────────────────────────────────────────────────────────
