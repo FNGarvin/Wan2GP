@@ -185,6 +185,28 @@ if [ -d "/opt/sage_wheels" ] && command -v nvidia-smi >/dev/null 2>&1; then
     else
         echo "[WARN] No matching wheel found for architecture suffix '${_W_SUFFIX}'."
     fi
+
+    # ── Blackwell Ultra-Fast Path (NVFP4 / LightX2V) ──────────────────────────
+    # Only triggers if hardware is Blackwell (sm_12x) AND we are in a cu13 image.
+    if [[ "$_CAP" == "12."* ]] && [ -d "/opt/bw_wheels" ]; then
+        echo "[INFO] Blackwell detected (sm_${_CAP}) - Activating NVFP4 (LightX2V) optimized path..."
+        
+        # 1. Install LightX2V Python package (if not already present)
+        if ! pip show lightx2v &>/dev/null; then
+             # Typically LightX2V is installed in the deps stage, but we check here.
+             echo "[INFO] Installing LightX2V framework..."
+             pip install lightx2v --break-system-packages || echo "[ERROR] LightX2V install failed."
+        fi
+
+        # 2. Install the one-time build NVFP4 kernel
+        _BW_WHEEL=$(ls /opt/bw_wheels/lightx2v_kernel*.whl 2>/dev/null | head -1 || true)
+        if [ -n "$_BW_WHEEL" ]; then
+            echo "[INFO] Installing native NVFP4 kernel: $(basename "$_BW_WHEEL")"
+            pip install --no-deps "$_BW_WHEEL" --break-system-packages || echo "[ERROR] NVFP4 kernel install failed."
+        else
+            echo "[WARN] Blackwell hardware detected but no NVFP4 kernel found in /opt/bw_wheels."
+        fi
+    fi
 fi
 
 # ── Launch ────────────────────────────────────────────────────────────────────
