@@ -68,7 +68,7 @@ RUN pip install scikit_build_core wheel --break-system-packages && \
     git clone https://github.com/ModelTC/LightX2V.git /tmp/LightX2V && \
     cd /tmp/LightX2V/lightx2v_kernel && \
     export CUTLASS_PATH=/opt/cutlass && \
-    MAX_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4 \
+    MAX_JOBS=1 CMAKE_BUILD_PARALLEL_LEVEL=1 \
     uv build --wheel \
       -Cbuild-dir=build . \
       -Ccmake.define.CUTLASS_PATH=/opt/cutlass \
