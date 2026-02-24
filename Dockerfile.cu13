@@ -15,7 +15,7 @@ ARG REPO_OWNER="FNGarvin/Wan2GP"
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: base
 # ─────────────────────────────────────────────────────────────────────────────
-FROM nvidia/cuda:13.0-cudnn-devel-ubuntu24.04 AS base
+FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04 AS base
 
 ARG CUDA_ARCHITECTURES
 ENV DEBIAN_FRONTEND=noninteractive
