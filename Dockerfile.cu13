@@ -113,9 +113,6 @@ COPY requirements.txt /workspace/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --break-system-packages -r /workspace/requirements.txt
 
-# Blackwell Framework
-RUN uv pip install --system --break-system-packages lightx2v
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: runtime
 # ─────────────────────────────────────────────────────────────────────────────

@@ -195,7 +195,7 @@ if [ -d "/opt/sage_wheels" ] && command -v nvidia-smi >/dev/null 2>&1; then
         if ! pip show lightx2v &>/dev/null; then
              # Typically LightX2V is installed in the deps stage, but we check here.
              echo "[INFO] Installing LightX2V framework..."
-             pip install lightx2v --break-system-packages || echo "[ERROR] LightX2V install failed."
+             pip install -v git+https://github.com/ModelTC/LightX2V.git --break-system-packages || echo "[ERROR] LightX2V install failed."
         fi
 
         # 2. Install the one-time build NVFP4 kernel
