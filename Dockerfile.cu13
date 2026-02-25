@@ -13,6 +13,7 @@ ARG SAGE_VERSION="2.2.0"
 # REPO_OWNER defines where optimized wheels and kernel assets are hosted.
 # Overridden by CI (${{ github.repository }}) or build_local.sh (git remote).
 ARG REPO_OWNER="deepbeepmeep/Wan2GP"
+ARG FILEBROWSER_VERSION="2.32.0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: base
@@ -123,9 +124,30 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Stage: runtime
 # ─────────────────────────────────────────────────────────────────────────────
 FROM deps AS runtime
-COPY . /workspace/wan2gp
+
+ARG FILEBROWSER_VERSION
+ARG CUDA_ARCHITECTURES
+ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
+
+# Filebrowser — lightweight browser-based file manager (optional, env-gated)
+RUN curl -fsSL \
+    "https://github.com/filebrowser/filebrowser/releases/download/v${FILEBROWSER_VERSION}/linux-amd64-filebrowser.tar.gz" \
+    -o /tmp/fb.tar.gz && \
+    tar -xzf /tmp/fb.tar.gz -C /usr/local/bin/ filebrowser && \
+    rm /tmp/fb.tar.gz
+
+# Project source baked into image (no host bind mount for cloud deployments).
+# /workspace/ maps to the pod network volume and persists across restarts.
 WORKDIR /workspace/wan2gp
+COPY . .
+
+RUN mkdir -p \
+    /workspace/models \
+    /workspace/outputs \
+    /workspace/.cache/huggingface \
+    /workspace/.cache/triton
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+EXPOSE 7860 22
 ENTRYPOINT ["/entrypoint.sh"]
