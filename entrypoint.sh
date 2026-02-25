@@ -195,7 +195,7 @@ if [ -d "/opt/sage_wheels" ] && command -v nvidia-smi >/dev/null 2>&1; then
         _BW_WHEEL=$(ls /opt/bw_wheels/lightx2v_kernel*.whl 2>/dev/null | head -1 || true)
         if [ -n "$_BW_WHEEL" ]; then
             echo "[INFO] Installing native NVFP4 kernel: $(basename "$_BW_WHEEL")"
-            pip install --no-deps "$_BW_WHEEL" --break-system-packages || echo "[ERROR] NVFP4 kernel install failed."
+            pip install --no-deps "$_BW_WHEEL" || echo "[ERROR] NVFP4 kernel install failed."
         else
             echo "[WARN] Blackwell hardware detected but no NVFP4 kernel found in /opt/bw_wheels."
         fi

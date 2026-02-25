@@ -40,14 +40,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git wget curl cmake ninja-build \
     libgl1 libglib2.0-0 ffmpeg \
     openssh-server \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
-RUN pip install --no-cache-dir uv==0.6.2 --break-system-packages
+RUN pip install --no-cache-dir uv==0.6.2
 ENV PATH="/root/.local/bin:${PATH}"
 ENV UV_HTTP_TIMEOUT=300
 
+# Install PyTorch cu128 (RTX 30/40)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --break-system-packages \
+    uv pip install --system \
     torch==2.10.0+cu128 \
     torchvision==0.25.0+cu128 \
     torchaudio==2.10.0+cu128 \
@@ -61,14 +63,14 @@ FROM base AS sage-tools
 
 ENV FORCE_CUDA="1"
 ARG CUDA_ARCHITECTURES
-RUN pip install wheel packaging --break-system-packages && \
+RUN pip install wheel packaging && \
     git clone --branch v2.2.0 --depth 1 \
     https://github.com/thu-ml/SageAttention.git /tmp/SageAttention && \
     cd /tmp/SageAttention && \
     export TORCH_CUDA_ARCH_LIST="${CUDA_ARCHITECTURES}" && \
     MAX_JOBS=1 python3 setup.py bdist_wheel && \
     mkdir -p /tmp/sa_dist && cp dist/*.whl /tmp/sa_dist/ && \
-    pip install --no-deps /tmp/sa_dist/*.whl --break-system-packages && \
+    pip install --no-deps /tmp/sa_dist/*.whl && \
     rm -rf /tmp/SageAttention
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,9 +117,10 @@ FROM sage-compile AS deps
 # does not have all versions (e.g. onnxruntime-gpu==1.22.0 is only on PyPI).
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --break-system-packages \
+    uv pip install --system \
     --index-strategy unsafe-best-match \
-    -r /tmp/requirements.txt
+    -r /tmp/requirements.txt && \
+    uv pip install -U --system "huggingface-hub==0.36.2" git+https://github.com/huggingface/diffusers@main
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: runtime
