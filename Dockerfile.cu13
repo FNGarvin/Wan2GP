@@ -114,8 +114,7 @@ FROM sage-compile AS deps
 COPY requirements.txt /workspace/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r /workspace/requirements.txt && \
-    uv pip install -U --system "huggingface-hub==0.36.2" git+https://github.com/huggingface/diffusers@main && \
-    uv pip install --system git+https://github.com/ModelTC/LightX2V.git --no-deps
+    uv pip install -U --system "huggingface-hub==0.36.2" git+https://github.com/huggingface/diffusers@main
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: runtime
