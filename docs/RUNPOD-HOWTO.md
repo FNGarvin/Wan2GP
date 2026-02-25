@@ -34,6 +34,12 @@ At this point, the Gradio interface is your playground.  Models will download au
 
 ![Just Hit Generate](images/just_hit_generate.jpg)
 
+### 6. Download Your Work and Terminate the Pod
+
+![Download Your Work](images/filemanager.jpg)
+
+![Main Control Panel](images/main_control_panel.jpg)
+
 ---
 <div align="center">
   <b>Wan2GP by Deepbeepmeep</b>
