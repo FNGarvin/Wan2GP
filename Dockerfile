@@ -53,6 +53,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     torch==2.10.0+cu128 \
     torchvision==0.25.0+cu128 \
     torchaudio==2.10.0+cu128 \
+    torchao==0.16.0+cu128 \
     --index-url https://download.pytorch.org/whl/cu128
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +91,9 @@ RUN ssh-keygen -A && \
 # ── SageAttention 2++ ────────────────────────────────────────────────────────
 # We download ALL parallel factory wheels. entrypoint.sh installs the best match.
 ARG SAGE_VERSION="2.2.0"
-ARG REPO_OWNER="FNGarvin/Wan2GP"
+# REPO_OWNER defines where optimized wheels and kernel assets are hosted.
+# Overridden by CI (${{ github.repository }}) or build_local.sh (git remote).
+ARG REPO_OWNER="deepbeepmeep/Wan2GP"
 RUN mkdir -p /opt/sage_wheels && \
     cd /opt/sage_wheels && \
     VTAG="v${SAGE_VERSION}" && \
@@ -120,7 +123,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
     --index-strategy unsafe-best-match \
     -r /tmp/requirements.txt && \
-    uv pip install -U --system "huggingface-hub==0.36.2" git+https://github.com/huggingface/diffusers@main
+    uv pip install -U --system --force-reinstall "huggingface-hub==0.36.2" git+https://github.com/huggingface/diffusers@main
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: runtime
