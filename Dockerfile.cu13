@@ -108,7 +108,7 @@ RUN mkdir -p /opt/sage_wheels && \
 RUN mkdir -p /opt/bw_wheels && \
     cd /opt/bw_wheels && \
     BURL="https://github.com/${REPO_OWNER}/releases/download/blackwell-kernels" && \
-    curl -L -O "${BURL}/lightx2v_kernel-*.whl" || echo "Optional BW Kernels"
+    curl -L -O "${BURL}/lightx2v_kernel-0.0.1-cp39-abi3-linux_x86_64.whl" || echo "Optional BW Kernels"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage: deps
