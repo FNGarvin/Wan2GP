@@ -34,6 +34,8 @@ FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS base
 
 ARG CUDA_ARCHITECTURES
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV PYTHONWARNINGS="ignore:invalid escape sequence:SyntaxWarning"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-dev python3-pip \
@@ -123,6 +125,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
     --index-strategy unsafe-best-match \
     -r /tmp/requirements.txt && \
+    uv pip install --system https://github.com/nunchaku-ai/nunchaku/releases/download/v1.3.0dev20260213/nunchaku-1.3.0.dev20260213+cu12.8torch2.10-cp312-cp312-linux_x86_64.whl && \
     uv pip install -U --system --force-reinstall "huggingface-hub==0.36.2" git+https://github.com/huggingface/diffusers@main
 
 # ─────────────────────────────────────────────────────────────────────────────
