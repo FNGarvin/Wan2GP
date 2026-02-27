@@ -19,6 +19,16 @@ set -euo pipefail
 
 export PYTHONUNBUFFERED=1
 
+# ── Library Path Sanitization ────────────────────────────────────────────────
+# FIXED: Unset LD_LIBRARY_PATH to prevent "Library Shadowing" conflicts.
+# NVIDIA base images (and some cloud providers) often set LD_LIBRARY_PATH to 
+# include /usr/local/cuda/lib64. However, modern PyTorch (2.10.0+cu130) packages 
+# its own optimized CUDA/cuBLAS binaries via pip (e.g., nvidia-cublas).
+# If LD_LIBRARY_PATH is set, the dynamic linker prioritizes system stubs 
+# over PyTorch's bundled libraries, leading to RuntimeError: CUBLAS_STATUS_INVALID_VALUE.
+# Clearing this ensures PyTorch's internal search path (rpath) is respected.
+unset LD_LIBRARY_PATH
+
 # ── Persistent cache dirs (pod network volume) ───────────────────────────────
 export HF_HOME=/workspace/.cache/huggingface
 export TRITON_CACHE_DIR=/workspace/.cache/triton

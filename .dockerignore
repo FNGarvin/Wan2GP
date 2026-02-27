@@ -8,3 +8,7 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Allow wheels in private/dist for local factory builds
+!private/dist/
+!private/dist/**
